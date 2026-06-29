@@ -33,7 +33,8 @@ from .state import AgentState, Message, MessageRole, ToolCall
 from .config import AgentConfig
 from ..tools.registry import ToolRegistry, get_registry
 from ..tools.base import ToolPermission
-from ..context.manager import ContextManager
+# 注意：ContextManager 在 __init__ 内延迟导入，避免
+# context.manager <-> core.state <-> core.agent 的循环导入。
 
 # 延迟导入避免循环依赖
 from typing import TYPE_CHECKING
@@ -189,6 +190,7 @@ class AgentLoop:
             session_store = SessionStore(db_path=config.session_db_path)
         self.session_store = session_store
 
+        from ..context.manager import ContextManager
         self.context_manager = ContextManager(max_tokens=config.max_context_tokens)
 
         # 模型调用函数（需要外部注入）

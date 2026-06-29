@@ -23,35 +23,55 @@ class ContextManager:
     - 在 context 过长时进行压缩
     """
     
-    def __init__(self, max_tokens: int = 200000):
+    def __init__(self, max_tokens: int = 200000, load_project_context: bool = True):
         self.max_tokens = max_tokens
         self.compression_threshold = 0.9  # 90% 时触发压缩
-    
+        self._load_project_context = load_project_context
+        # 项目上下文只加载一次并缓存（会话生命周期内通常不变）
+        self._project_context_cache: str | None = None
+
+    def _get_project_context(self) -> str:
+        """加载（并缓存）AGENTS.md/CLAUDE.md 项目上下文。"""
+        if not self._load_project_context:
+            return ""
+        if self._project_context_cache is None:
+            from .project_context import load_project_context
+            try:
+                self._project_context_cache = load_project_context()
+            except Exception:
+                self._project_context_cache = ""
+        return self._project_context_cache
+
     def assemble_context(self, state: AgentState, system_prompt: str) -> list[dict[str, Any]]:
         """
         组装 context
-        
-        参考 Claude Code 的 9 个有序来源：
+
+        有序来源：
         1. System prompt
-        2. CLAUDE.md 层级配置
+        2. 项目上下文（AGENTS.md / CLAUDE.md 层级合并）
         3. 会话历史
-        4. 当前文件上下文
-        5. 工具结果
-        6. ...
         """
         messages = []
-        
+
         # 1. System prompt
         if system_prompt:
             messages.append({
                 "role": "system",
                 "content": system_prompt
             })
-        
-        # 2. 添加会话历史
+
+        # 2. 项目上下文（AGENTS.md / CLAUDE.md）
+        project_ctx = self._get_project_context()
+        if project_ctx:
+            messages.append({
+                "role": "system",
+                "content": project_ctx
+            })
+
+        # 3. 添加会话历史
         for msg in state.messages:
             messages.append(msg.to_dict())
-        
+
         return messages
     
     def needs_compaction(self, state: AgentState) -> bool:
