@@ -71,6 +71,7 @@ class CodingAgent:
             model=self.config.model,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
+            extra_headers=self.config.extra_headers,
         )
         
         # 初始化 Agent Loop
@@ -170,6 +171,8 @@ class CodingAgent:
 
         # 把计划工具绑定到当前会话状态
         self.plan_tool.bind_state(self.state)
+        # 用 session_id 作为 prompt 缓存键，提高稳定前缀的缓存命中率
+        self.model_client.prompt_cache_key = self.state.session_id
 
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")
@@ -200,6 +203,7 @@ class CodingAgent:
                     session_id=self.session_store.create_session()
                 )
                 self.plan_tool.bind_state(self.state)
+                self.model_client.prompt_cache_key = self.state.session_id
                 print("✨ Started new session")
                 continue
             
@@ -283,6 +287,11 @@ Permissions:
             turns = event.data["turns"]
             print(f"\n{'=' * 50}")
             print(f"✨ Done in {turns} turns")
+            mc = self.model_client
+            if mc.total_prompt_tokens:
+                print(f"   Tokens: {mc.total_prompt_tokens} in / "
+                      f"{mc.total_completion_tokens} out "
+                      f"(cache hits: {mc.cache_hit_rate*100:.0f}%)")
 
 
 async def main() -> None:

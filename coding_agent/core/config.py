@@ -21,7 +21,8 @@ class AgentConfig:
     api_key: str = ""
     api_base_url: str = "https://api.openai.com/v1"
     max_tokens: int = 4096
-    temperature: float = 0.7
+    temperature: float | None = 0.7  # None 时省略该字段（GPT-5 等只接受默认温度）
+    extra_headers: dict[str, str] = field(default_factory=dict)  # 网关自定义 header
     
     # Context 配置
     max_context_tokens: int = 200000

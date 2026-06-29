@@ -47,6 +47,7 @@ class ModelClient:
         base_delay: float = 1.0,
         backoff_factor: float = 2.0,
         extra_headers: dict[str, str] | None = None,
+        prompt_cache_key: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -54,10 +55,31 @@ class ModelClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
+        self.prompt_cache_key = prompt_cache_key
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.backoff_factor = backoff_factor
         self.extra_headers = extra_headers or {}
+        # 累计 token 用量（用于成本/缓存观测）
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_cached_tokens = 0
+
+    def _record_usage(self, usage: dict[str, Any] | None) -> None:
+        """累计 token 用量，含 prompt 缓存命中。"""
+        if not usage:
+            return
+        self.total_prompt_tokens += usage.get("prompt_tokens", 0) or 0
+        self.total_completion_tokens += usage.get("completion_tokens", 0) or 0
+        details = usage.get("prompt_tokens_details") or {}
+        self.total_cached_tokens += details.get("cached_tokens", 0) or 0
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """缓存命中率（cached_prompt_tokens / total_prompt_tokens）。"""
+        if self.total_prompt_tokens == 0:
+            return 0.0
+        return self.total_cached_tokens / self.total_prompt_tokens
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -83,6 +105,9 @@ class ModelClient:
         # 默认温度，显式传 temperature 会被拒（400 Unsupported value）。
         if self.temperature is not None:
             payload["temperature"] = self.temperature
+        # prompt_cache_key 帮助网关把相同前缀的请求路由到同一缓存（OpenAI 支持）
+        if self.prompt_cache_key:
+            payload["prompt_cache_key"] = self.prompt_cache_key
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -134,8 +159,11 @@ class ModelClient:
         on_text_delta: TextDeltaHandler | None,
     ) -> dict[str, Any]:
         payload = self._payload(messages, tools, stream=True)
+        # 请求在流末尾附带 usage（OpenAI 兼容），用于缓存/成本观测
+        payload["stream_options"] = {"include_usage": True}
         content_parts: list[str] = []
         tool_calls_data: list[dict[str, Any]] = []
+        usage: dict[str, Any] = {}
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
@@ -157,6 +185,10 @@ class ModelClient:
                     except json.JSONDecodeError:
                         continue
 
+                    # usage 通常在最后一个 chunk（choices 为空）里
+                    if data.get("usage"):
+                        usage = data["usage"]
+
                     choices = data.get("choices", [])
                     if not choices:
                         continue
@@ -171,9 +203,11 @@ class ModelClient:
                     if delta.get("tool_calls"):
                         _accumulate_tool_calls(tool_calls_data, delta["tool_calls"])
 
+        self._record_usage(usage)
         return {
             "content": "".join(content_parts),
             "tool_calls": tool_calls_data,
+            "usage": usage,
         }
 
     async def _complete_nonstream(
@@ -193,11 +227,13 @@ class ModelClient:
 
         choices = data.get("choices", [])
         if not choices:
-            return {"content": "", "tool_calls": []}
+            return {"content": "", "tool_calls": [], "usage": data.get("usage", {})}
         message = choices[0].get("message", {})
+        self._record_usage(data.get("usage"))
         return {
             "content": message.get("content") or "",
             "tool_calls": message.get("tool_calls") or [],
+            "usage": data.get("usage", {}),
         }
 
 

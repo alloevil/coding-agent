@@ -168,3 +168,42 @@ async def test_temperature_included_when_set(patch_async_client):
     client = ModelClient(api_key="k", base_url="http://x/v1", model="m", temperature=0.5)
     await client.complete([{"role": "user", "content": "hi"}], stream=False)
     assert captured["body"]["temperature"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_usage_tracked_and_cache_hit_rate(patch_async_client):
+    body = {"choices": [{"message": {"content": "ok", "tool_calls": []}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10,
+                      "prompt_tokens_details": {"cached_tokens": 80}}}
+    patch_async_client(httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    r = await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert r["usage"]["prompt_tokens"] == 100
+    assert client.total_prompt_tokens == 100
+    assert client.total_completion_tokens == 10
+    assert client.total_cached_tokens == 80
+    assert abs(client.cache_hit_rate - 0.8) < 1e-9
+    # 第二次调用累加
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert client.total_prompt_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_prompt_cache_key_sent_when_set(patch_async_client):
+    captured = {}
+
+    def handler(req):
+        captured["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    patch_async_client(httpx.MockTransport(handler))
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m",
+                         prompt_cache_key="session-abc")
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert captured["body"]["prompt_cache_key"] == "session-abc"
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_rate_zero_when_no_calls():
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    assert client.cache_hit_rate == 0.0
