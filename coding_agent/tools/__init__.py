@@ -7,6 +7,7 @@ from .agent_ops import register_agent_tools
 from .tdd_ops import register_tdd_tools
 from .memory_ops import register_memory_tools
 from .plan_ops import register_plan_tools, UpdatePlanTool
+from .patch_ops import register_patch_tools, ApplyPatchTool
 
 __all__ = [
     "Tool",
@@ -26,4 +27,6 @@ __all__ = [
     "register_memory_tools",
     "register_plan_tools",
     "UpdatePlanTool",
+    "register_patch_tools",
+    "ApplyPatchTool",
 ]

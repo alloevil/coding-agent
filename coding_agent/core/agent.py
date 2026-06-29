@@ -693,46 +693,7 @@ class AgentLoop:
     # -----------------------------------------------------------------------
     # 带回滚 + 重试的执行入口
     # -----------------------------------------------------------------------
-    
-    # -----------------------------------------------------------------------
-    # 任务完成验证
-    # -----------------------------------------------------------------------
-    
-    async def _verify_completion(self, state: AgentState) -> str | None:
-        """
-        验证任务是否真正完成。
-        
-        Returns:
-            None if task is complete, or error message if issues found.
-        """
-        import os
-        from pathlib import Path
-        
-        # 检查最近的助手消息中是否提到了创建文件
-        recent_messages = state.messages[-5:] if len(state.messages) > 5 else state.messages
-        
-        # 收集提到的文件名
-        mentioned_files = set()
-        for msg in recent_messages:
-            if msg.role == MessageRole.ASSISTANT:
-                content = msg.content if hasattr(msg, 'content') and msg.content else str(msg)
-                # 提取文件名
-                import re
-                # 匹配常见文件名模式
-                files = re.findall(r'[\w/\\.-]+\.[\w]+', content)
-                mentioned_files.update(files)
-        
-        # 检查这些文件是否存在
-        missing_files = []
-        for f in mentioned_files:
-            if not Path(f).exists():
-                missing_files.append(f)
-        
-        if missing_files:
-            return f"Some mentioned files don't exist: {', '.join(missing_files[:5])}"
-        
-        return None
-    
+
     async def _execute_with_recovery(
         self,
         tool_call: ToolCall,

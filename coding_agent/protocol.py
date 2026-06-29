@@ -49,7 +49,9 @@ class AgentProtocol:
         register_shell_tools()
         register_git_tools()
         from .tools.plan_ops import register_plan_tools
+        from .tools.patch_ops import register_patch_tools
         self.plan_tool = register_plan_tools()
+        register_patch_tools()
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)
