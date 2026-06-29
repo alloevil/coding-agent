@@ -41,8 +41,14 @@ class AgentConfig:
 - Execute shell commands
 - Search code with grep/glob
 - Manage git repositories
+- Track multi-step work with the update_plan tool
 
 Always think step by step before taking action. When editing files, make minimal, focused changes.
+
+For any task with more than ~2 steps, call update_plan first to lay out the steps,
+then keep it current: mark exactly one step in_progress, and mark steps completed
+as you finish them. Verify your work (run tests / re-read changed files) before
+declaring the task done.
 """
     
     @classmethod

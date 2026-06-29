@@ -50,6 +50,8 @@ class CodingAgent:
         register_git_tools()
         register_browser_tools()
         register_lsp_tools()
+        from .tools.plan_ops import register_plan_tools
+        self.plan_tool = register_plan_tools()
 
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
@@ -157,7 +159,10 @@ class CodingAgent:
             self.state = AgentState(
                 session_id=self.session_store.create_session()
             )
-        
+
+        # 把计划工具绑定到当前会话状态
+        self.plan_tool.bind_state(self.state)
+
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")
         print(f"   Model: {self.config.model}")
@@ -186,6 +191,7 @@ class CodingAgent:
                 self.state = AgentState(
                     session_id=self.session_store.create_session()
                 )
+                self.plan_tool.bind_state(self.state)
                 print("✨ Started new session")
                 continue
             

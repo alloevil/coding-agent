@@ -6,6 +6,7 @@ from .lsp_ops import register_lsp_tools, get_server_manager
 from .agent_ops import register_agent_tools
 from .tdd_ops import register_tdd_tools
 from .memory_ops import register_memory_tools
+from .plan_ops import register_plan_tools, UpdatePlanTool
 
 __all__ = [
     "Tool",
@@ -23,4 +24,6 @@ __all__ = [
     "register_agent_tools",
     "register_tdd_tools",
     "register_memory_tools",
+    "register_plan_tools",
+    "UpdatePlanTool",
 ]

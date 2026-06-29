@@ -48,6 +48,8 @@ class AgentProtocol:
         register_file_tools()
         register_shell_tools()
         register_git_tools()
+        from .tools.plan_ops import register_plan_tools
+        self.plan_tool = register_plan_tools()
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)
@@ -125,7 +127,10 @@ class AgentProtocol:
                 self.state = AgentState(
                     session_id=self.session_store.create_session()
                 )
-            
+
+            # 把计划工具绑定到当前会话状态
+            self.plan_tool.bind_state(self.state)
+
             # 运行 agent
             async for event in self.agent_loop.run(self.state, content):
                 self._forward_event(event)
