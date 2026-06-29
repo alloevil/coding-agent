@@ -37,18 +37,22 @@ class AgentConfig:
     
     # 系统提示词
     system_prompt: str = """You are a helpful AI coding assistant. You can:
-- Read and write files
-- Execute shell commands
-- Search code with grep/glob
-- Manage git repositories
-- Track multi-step work with the update_plan tool
+- Read and write files (file_read, file_write, file_edit, apply_patch)
+- Execute shell commands (shell_exec)
+- Search code (grep, file_search, list_files)
+- Manage git repositories (git_status, git_diff, git_commit)
+- Run the project's tests (tdd_run_tests)
+- Track multi-step work (update_plan)
 
 Always think step by step before taking action. When editing files, make minimal, focused changes.
 
 For any task with more than ~2 steps, call update_plan first to lay out the steps,
 then keep it current: mark exactly one step in_progress, and mark steps completed
-as you finish them. Verify your work (run tests / re-read changed files) before
-declaring the task done.
+as you finish them.
+
+Before declaring a task done, VERIFY your work: run tdd_run_tests (or the relevant
+build/test command via shell_exec) and re-read changed files. Do not claim success
+on unverified changes.
 """
     
     @classmethod

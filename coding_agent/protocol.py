@@ -50,8 +50,12 @@ class AgentProtocol:
         register_git_tools()
         from .tools.plan_ops import register_plan_tools
         from .tools.patch_ops import register_patch_tools
+        from .tools.tdd_ops import register_tdd_tools
+        from .tools.memory_ops import register_memory_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
+        register_tdd_tools()
+        register_memory_tools()
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)

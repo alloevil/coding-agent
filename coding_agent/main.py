@@ -52,8 +52,12 @@ class CodingAgent:
         register_lsp_tools()
         from .tools.plan_ops import register_plan_tools
         from .tools.patch_ops import register_patch_tools
+        from .tools.tdd_ops import register_tdd_tools
+        from .tools.memory_ops import register_memory_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
+        register_tdd_tools()
+        register_memory_tools()
 
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
