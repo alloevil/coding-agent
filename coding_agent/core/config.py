@@ -30,6 +30,7 @@ class AgentConfig:
     # 行为配置
     auto_approve: bool = False
     max_turns: int = 100
+    stream: bool = True  # 是否流式输出
     
     # 会话配置
     session_db_path: str = "/tmp/.coding-agent/sessions.db"
