@@ -1,0 +1,111 @@
+Endpoint: http://model.mify.ai.srv/v1  Model: gpt-5-mini
+
+============================================================
+🚀 Coding Agent Benchmark
+   Model: gpt-5-mini
+   Cases: 58
+============================================================
+
+[1/58] file_01 (easy) - Create a file called hello.txt with the content 'Hello, Worl... ✅ PASS (5t, 17.2s)
+[2/58] file_02 (easy) - Read the file config.txt and tell me what's on line 3... ✅ PASS (2t, 7.1s)
+[3/58] file_03 (medium) - In the file math.py, change the function add(a, b) to return... ✅ PASS (10t, 33.4s)
+[4/58] understand_01 (medium) - Look at fibonacci.py. How many functions does it define? Ans... ✅ PASS (2t, 5.3s)
+[5/58] bugfix_01 (medium) - The file sorter.py has a bug: sort_numbers([3,1,2]) should r... ✅ PASS (10t, 40.0s)
+[6/58] bugfix_02 (hard) - Fix the bug in calculator.py: divide(10, 0) should return 'E... ✅ PASS (9t, 30.4s)
+[7/58] refactor_01 (hard) - Extract the validation logic from user.py into a separate fi... ✅ PASS (18t, 74.1s)
+[8/58] testgen_01 (medium) - Write pytest tests for the function is_palindrome() in palin... ✅ PASS (8t, 31.8s)
+[9/58] tool_combo_01 (medium) - Create a Python file count.py that counts words in a text fi... ✅ PASS (6t, 25.7s)
+[10/58] planning_01 (hard) - Create a mini project: 1) Create a models.py with a Todo cla... ✅ PASS (9t, 31.3s)
+[11/58] shell_01 (easy) - Run 'echo hello > test.txt' and then show the contents of te... ✅ PASS (4t, 13.9s)
+[12/58] multi_01 (hard) - Create a CSV file data.csv with columns name,age,city and 3 ... ✅ PASS (7t, 31.3s)
+[13/58] file_04 (easy) - Create a directory structure: src/models/ and src/utils/, th... ✅ PASS (4t, 13.4s)
+[14/58] file_05 (medium) - Read the file data.json and create a new file result.txt con... ✅ PASS (8t, 29.9s)
+[15/58] file_06 (medium) - Merge the contents of part1.txt and part2.txt into a single ... ✅ PASS (8t, 23.1s)
+[16/58] file_07 (easy) - Copy the file source.txt to a new location backup/source.txt... ✅ PASS (10t, 29.4s)
+[17/58] file_08 (medium) - Remove all empty/blank lines from messy.txt and save the res... ✅ PASS (8t, 37.3s)
+[18/58] understand_02 (medium) - Look at recursive.py. What does factorial(5) return? Just wr... ✅ PASS (3t, 9.7s)
+[19/58] understand_03 (medium) - Look at app.py. List all function calls (function name only,... ❌ FAIL (5t, 20.6s)
+         Missing patterns ['json.dumps'] in calls.txt
+[20/58] understand_04 (easy) - Read mystery.py and write a one-sentence explanation of what... ✅ PASS (3t, 6.9s)
+[21/58] understand_05 (hard) - Compare sort_v1.py and sort_v2.py. Write the key differences... ✅ PASS (6t, 22.2s)
+[22/58] bugfix_03 (medium) - Fix the bug in get_first.py: get_first([]) should return Non... ✅ PASS (8t, 29.1s)
+[23/58] bugfix_04 (medium) - Fix the string encoding bug in read_file.py: it should handl... ✅ PASS (11t, 52.4s)
+[24/58] bugfix_05 (hard) - Fix the infinite recursion bug in countdown.py: countdown(5)... ❌ FAIL (9t, 34.1s)
+         'n - 1' not found in countdown.py: def countdown(n):
+    # Base case: stop when 
+[25/58] bugfix_06 (easy) - Fix the type error in concat.py: concat(1, 'hello') should r... ✅ PASS (9t, 33.3s)
+[26/58] bugfix_07 (medium) - Fix the missing error handling in load_config.py: when confi... ✅ PASS (8t, 41.6s)
+[27/58] bugfix_08 (hard) - Fix the race condition in counter.py: increment() is called ... ✅ PASS (13t, 56.9s)
+[28/58] bugfix_09 (medium) - Fix the config parser bug in parse_ini.py: it should handle ... ✅ PASS (10t, 40.0s)
+[29/58] bugfix_10 (hard) - Fix the memory leak in cache.py: the cache dict grows unboun... ✅ PASS (12t, 49.0s)
+[30/58] refactor_02 (easy) - Extract all magic numbers from pricing.py into named constan... ✅ PASS (12t, 41.2s)
+[31/58] refactor_03 (medium) - Split the monolithic process_data function in processor.py i... ✅ PASS (15t, 57.1s)
+[32/58] refactor_04 (hard) - Refactor shapes.py to use class inheritance: create a base S... ✅ PASS (7t, 31.4s)
+[33/58] refactor_05 (medium) - The file handlers.py has duplicate code in handle_get and ha... ✅ PASS (8t, 29.0s)
+[34/58] refactor_06 (hard) - Convert the synchronous fetch_data.py to use async/await wit... ✅ PASS (8t, 89.9s)
+[35/58] testgen_02 (medium) - Write pytest tests for clamp() in clamp.py. Include boundary... ✅ PASS (5t, 20.5s)
+[36/58] testgen_03 (medium) - Write pytest tests for divide() in divider.py. Cover excepti... ❌ FAIL (9t, 37.2s)
+         test_divider.py not found
+[37/58] testgen_04 (medium) - Write pytest tests for is_even() in math_utils.py using @pyt... ❌ FAIL (8t, 32.9s)
+         test_math_utils.py not found
+[38/58] testgen_05 (hard) - Write pytest tests for get_user_data() in user_service.py us... ❌ FAIL (7t, 32.7s)
+         test_user_service.py not found
+[39/58] testgen_06 (hard) - Write an integration test that creates a User, saves it with... ✅ PASS (6t, 20.8s)
+[40/58] tool_combo_02 (medium) - Create a file pipeline: 1) Create input.txt with 5 lines of ... ✅ PASS (8t, 31.7s)
+[41/58] tool_combo_03 (hard) - Generate a Python script calculator.py that supports +,-,*,/... ❌ FAIL (11t, 55.2s)
+         'calculator.py' exited 1: 
+[42/58] tool_combo_04 (medium) - Search through all .py files in the project directory and re... ✅ PASS (10t, 42.4s)
+[43/58] tool_combo_05 (hard) - Initialize a git repo, create a file README.md, commit it, t... ✅ PASS (12t, 34.4s)
+[44/58] tool_combo_06 (medium) - Create a project scaffold with: pyproject.toml, src/__init__... ✅ PASS (11t, 44.9s)
+[45/58] planning_02 (hard) - Build a data processing pipeline: 1) Create generator.py tha... ✅ PASS (8t, 58.7s)
+[46/58] planning_03 (hard) - Create an API client wrapper: 1) Create client.py with a cla... ✅ PASS (7t, 79.9s)
+[47/58] planning_04 (hard) - Build a CLI tool: 1) Create cli.py that parses args with arg... ✅ PASS (16t, 152.6s)
+[48/58] planning_05 (medium) - Create a config management system: 1) config.py with load/sa... ✅ PASS (8t, 46.3s)
+[49/58] planning_06 (medium) - Implement a logging system: 1) logger.py with a custom Logge... ✅ PASS (8t, 41.5s)
+[50/58] shell_02 (easy) - Use a shell pipeline: create a file with numbers (one per li... ✅ PASS (7t, 32.9s)
+[51/58] shell_03 (medium) - Create a script run.sh, make it executable with chmod +x, an... ✅ PASS (7t, 27.7s)
+[52/58] shell_04 (medium) - Create a Python script that reads the environment variable M... ✅ PASS (7t, 117.8s)
+[53/58] shell_05 (hard) - Create a script that starts a background Python HTTP server ... ✅ PASS (5t, 39.7s)
+[54/58] multi_02 (hard) - Build a data analysis pipeline: 1) Create messy_data.csv wit... ✅ PASS (8t, 45.4s)
+[55/58] multi_03 (hard) - Test-driven development cycle: 1) Create buggy math_utils.py... ✅ PASS (14t, 68.2s)
+[56/58] multi_04 (hard) - Code review + refactor + document: 1) Read messy_code.py, 2)... ✅ PASS (14t, 82.7s)
+[57/58] multi_05 (hard) - Dependency + build + run: 1) Create requirements.txt with at... ✅ PASS (10t, 52.4s)
+[58/58] multi_06 (hard) - Build error handling + logging + monitoring: 1) Create app.p... ✅ PASS (6t, 37.8s)
+
+============================================================
+📊 Benchmark Report
+============================================================
+  Total:   58
+  Passed:  52 (89.7%)
+  Failed:  6
+  Errors:  0
+  Avg turns: 8.4
+  Avg time:  40.6s
+
+  By Category:
+    bug_fix              █████████░ 9/10 (90%)
+    code_understanding   ████████░░ 4/5 (80%)
+    file_ops             ██████████ 8/8 (100%)
+    multi_step           ██████████ 6/6 (100%)
+    planning             ██████████ 6/6 (100%)
+    refactor             ██████████ 6/6 (100%)
+    shell                ██████████ 5/5 (100%)
+    test_generation      █████░░░░░ 3/6 (50%)
+    tool_usage           ████████░░ 5/6 (83%)
+
+  By Difficulty:
+    easy                 ██████████ 9/9 (100%)
+    hard                 ████████░░ 20/23 (87%)
+    medium               ████████░░ 23/26 (88%)
+
+  Failed Cases:
+    [FAIL] understand_03 (code_understanding/medium): Missing patterns ['json.dumps'] in calls.txt
+    [FAIL] bugfix_05 (bug_fix/hard): 'n - 1' not found in countdown.py: def countdown(n):
+    # B
+    [FAIL] testgen_03 (test_generation/medium): test_divider.py not found
+    [FAIL] testgen_04 (test_generation/medium): test_math_utils.py not found
+    [FAIL] testgen_05 (test_generation/hard): test_user_service.py not found
+    [FAIL] tool_combo_03 (tool_usage/hard): 'calculator.py' exited 1: 
+============================================================
+
+Report saved to /mnt/newdisk/PycharmProjects/pythonProject/coding-agent/benchmarks/benchmark_report.json

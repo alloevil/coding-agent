@@ -359,6 +359,44 @@ def _check_git_init(d: str) -> tuple[bool, str]:
     return False, "No .git directory found"
 
 
+def _check_runs_and_outputs(d: str, filename: str, call_snippet: str,
+                            expected_substrings: list[str],
+                            timeout: int = 5) -> tuple[bool, str]:
+    """
+    行为验证：实际运行模块里的代码并检查输出，而非匹配实现形态。
+
+    在子进程里 import 该文件并执行 call_snippet（如 "countdown(5)"），
+    捕获 stdout，检查包含所有 expected_substrings。子进程超时即视为
+    未终止（如无限递归 / 死循环）。这样任何正确修复都能通过，
+    无论用 n-1 还是 base-case 守卫。
+    """
+    p = Path(d, filename)
+    if not p.exists():
+        return False, f"File '{filename}' not found"
+    mod = filename[:-3] if filename.endswith(".py") else filename
+    # 用 `from <mod> import *` 把函数名导入命名空间，这样 call_snippet 里
+    # 可直接写 `countdown(5)` 而不会与模块名冲突。
+    driver = f"from {mod} import *\n{call_snippet}\n"
+    try:
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", driver],
+            capture_output=True, text=True, timeout=timeout, cwd=d,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"'{filename}' did not terminate within {timeout}s (likely still buggy)"
+    except Exception as e:
+        return False, f"Run error: {e}"
+    if result.returncode != 0:
+        return False, f"'{filename}' crashed: {result.stderr[-120:]}"
+    out = result.stdout
+    missing = [s for s in expected_substrings if s not in out]
+    if missing:
+        return False, f"Output missing {missing}. Got: {out[:120]!r}"
+    return True, f"'{filename}' runs and outputs correctly: {out[:80]!r}"
+
+
+
 def _check_refactor_class_inherit(d: str) -> tuple[bool, str]:
     """Check that a base class exists and a subclass inherits from it."""
     for fname in Path(d).glob("*.py"):
@@ -711,7 +749,9 @@ def main():
     print(n)
     countdown(n)  # Bug: should be n-1
 """},
-        verify_fn=lambda d: _check_contains(d, "countdown.py", "n - 1") or _check_contains(d, "countdown.py", "n-1"),
+        verify_fn=lambda d: _check_runs_and_outputs(
+            d, "countdown.py", "countdown(5)", ["5", "4", "3", "2", "1", "0"]
+        ),
         max_turns=5,
     ),
     BenchmarkCase(
