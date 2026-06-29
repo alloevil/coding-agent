@@ -46,6 +46,7 @@ class ModelClient:
         max_retries: int = 5,
         base_delay: float = 1.0,
         backoff_factor: float = 2.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -56,12 +57,15 @@ class ModelClient:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.backoff_factor = backoff_factor
+        self.extra_headers = extra_headers or {}
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+        headers.update(self.extra_headers)
+        return headers
 
     def _payload(
         self,
@@ -73,9 +77,12 @@ class ModelClient:
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
             "stream": stream,
         }
+        # temperature=None 时省略该字段：部分模型（如 GPT-5 系列）只接受
+        # 默认温度，显式传 temperature 会被拒（400 Unsupported value）。
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

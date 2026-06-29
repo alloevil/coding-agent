@@ -125,3 +125,46 @@ async def test_no_retry_on_400(patch_async_client):
                          base_delay=0.0, max_retries=3)
     with pytest.raises(httpx.HTTPStatusError):
         await client.complete([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_extra_headers_sent(patch_async_client):
+    captured = {}
+
+    def handler(req):
+        captured["headers"] = req.headers
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok", "tool_calls": []}}]})
+
+    patch_async_client(httpx.MockTransport(handler))
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="gpt-5",
+                         extra_headers={"X-Model-Provider-Id": "azure_openai"})
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert captured["headers"]["x-model-provider-id"] == "azure_openai"
+
+
+@pytest.mark.asyncio
+async def test_temperature_omitted_when_none(patch_async_client):
+    captured = {}
+
+    def handler(req):
+        captured["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok", "tool_calls": []}}]})
+
+    patch_async_client(httpx.MockTransport(handler))
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="gpt-5", temperature=None)
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert "temperature" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_temperature_included_when_set(patch_async_client):
+    captured = {}
+
+    def handler(req):
+        captured["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok", "tool_calls": []}}]})
+
+    patch_async_client(httpx.MockTransport(handler))
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m", temperature=0.5)
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert captured["body"]["temperature"] == 0.5

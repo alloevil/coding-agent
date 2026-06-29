@@ -1231,18 +1231,30 @@ class BenchmarkRunner:
     """Benchmark 执行器"""
     
     def __init__(self, api_key: str, model: str = "xiaomi/mimo-v2.5-pro",
-                 base_url: str = "http://model.mify.ai.srv/v1"):
+                 base_url: str = "http://model.mify.ai.srv/v1",
+                 extra_headers: dict[str, str] | None = None):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.extra_headers = extra_headers or {}
         self.results: list[BenchmarkResult] = []
+        # 部分模型（GPT-5 系列）只接受默认温度，显式传会 400。
+        # 允许用 MODEL_TEMPERATURE=none 关闭，或对 gpt-5* 自动关闭。
+        temp_env = os.environ.get("MODEL_TEMPERATURE")
+        if temp_env is not None:
+            temperature = None if temp_env.lower() == "none" else float(temp_env)
+        elif model.lower().startswith("gpt-5") or "gpt-5" in model.lower():
+            temperature = None
+        else:
+            temperature = 0.7
         # 与生产一致的统一模型客户端（带退避重试）
         self.model_client = ModelClient(
             api_key=api_key,
             base_url=base_url,
             model=model,
             max_tokens=2048,
-            temperature=0.7,
+            temperature=temperature,
+            extra_headers=self.extra_headers,
         )
     
     async def run_case(self, case: BenchmarkCase) -> BenchmarkResult:
@@ -1490,7 +1502,15 @@ async def main():
         model = os.environ.get("CODING_AGENT_MODEL", "gpt-4o-mini")
 
     print(f"Endpoint: {base_url}  Model: {model}")
-    runner = BenchmarkRunner(api_key=api_key, model=model, base_url=base_url)
+    extra_headers = {}
+    raw_headers = os.environ.get("MODEL_EXTRA_HEADERS")
+    if raw_headers:
+        try:
+            extra_headers = json.loads(raw_headers)
+        except json.JSONDecodeError:
+            print(f"Warning: MODEL_EXTRA_HEADERS is not valid JSON, ignoring")
+    runner = BenchmarkRunner(api_key=api_key, model=model, base_url=base_url,
+                             extra_headers=extra_headers)
     report = await runner.run_all()
     print_report(report)
     
