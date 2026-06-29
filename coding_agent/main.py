@@ -266,7 +266,13 @@ Permissions:
         
         elif event.event == AgentEvent.COMPACTING:
             print("\n📦 Compacting context...")
-        
+
+        elif event.event == AgentEvent.RETRYING:
+            d = event.data
+            print(f"\n🔁 Retrying {d.get('tool_name')} "
+                  f"(attempt {d.get('attempt')}/{d.get('max_retries')}, "
+                  f"waiting {d.get('delay'):.1f}s)...")
+
         elif event.event == AgentEvent.DONE:
             turns = event.data["turns"]
             print(f"\n{'=' * 50}")

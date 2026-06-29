@@ -182,6 +182,9 @@ class AgentProtocol:
             AgentEvent.ERROR: "error",
             AgentEvent.DONE: "done",
             AgentEvent.COMPACTING: "compacting",
+            AgentEvent.RETRYING: "retrying",
+            AgentEvent.ROLLBACK: "rollback",
+            AgentEvent.INTERRUPTED: "interrupted",
         }
         
         event_type = event_map.get(event.event, "unknown")

@@ -362,17 +362,23 @@ class AgentLoop:
                         approved = False
                     
                     if approved:
-                        result, is_error = await self._execute_with_recovery(
-                            tool_call, state
-                        )
+                        result, is_error = "", False
+                        async for item in self._recovery_events(tool_call, state):
+                            if isinstance(item, tuple):
+                                result, is_error = item
+                            else:
+                                yield item
                     else:
                         result = f"Permission denied for tool '{tool_call.name}'"
                         is_error = True
                 else:
                     # 自动允许（READ 权限）
-                    result, is_error = await self._execute_with_recovery(
-                        tool_call, state
-                    )
+                    result, is_error = "", False
+                    async for item in self._recovery_events(tool_call, state):
+                        if isinstance(item, tuple):
+                            result, is_error = item
+                        else:
+                            yield item
                 
                 # 添加工具结果
                 state.add_tool_result(tool_call.id, result, is_error)
@@ -477,10 +483,14 @@ class AgentLoop:
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        event_cb: Callable[[AgentEventData], None] | None = None,
     ) -> tuple[str, bool]:
         """
         执行工具，带自动重试。
-        
+
+        Args:
+            event_cb: 可选回调，重试发生时收到 RETRYING 事件（用于向 UI 实时通知）。
+
         Returns:
             (result_str, is_error)
         """
@@ -522,9 +532,17 @@ class AgentLoop:
             # 还有重试机会
             if attempt < cfg.max_retries:
                 delay = cfg.base_delay * (cfg.backoff_factor ** attempt)
-                # 发送重试事件
-                # 注意：这里我们没法直接 yield，所以记录到 metadata
-                # 外层 run() 会通过另一个方式通知
+                if event_cb is not None:
+                    event_cb(AgentEventData(
+                        event=AgentEvent.RETRYING,
+                        data={
+                            "tool_name": tool_name,
+                            "attempt": attempt + 1,
+                            "max_retries": cfg.max_retries,
+                            "delay": delay,
+                            "error": last_error[:300],
+                        },
+                    ))
                 await asyncio.sleep(delay)
         
         # 所有重试用完
@@ -698,23 +716,68 @@ class AgentLoop:
         self,
         tool_call: ToolCall,
         state: AgentState,
+        event_cb: Callable[[AgentEventData], None] | None = None,
     ) -> tuple[str, bool]:
         """
         完整的工具执行流程：回滚记录 -> 中断检查 -> 重试执行。
-        
+
+        Args:
+            event_cb: 可选回调，转发执行期间的事件（如 RETRYING）。
+
         Returns:
             (result_str, is_error)
         """
         tool = self.tool_registry.get_tool(tool_call.name)
-        
+
         # 记录回滚信息（WRITE/EXECUTE 权限工具）
         if tool and tool.permission in (ToolPermission.WRITE, ToolPermission.EXECUTE):
             await self._record_rollback_info(tool_call.name, tool_call.arguments)
-        
+
         # 带重试执行
         result, is_error = await self._execute_with_retry(
             tool_call.name,
             tool_call.arguments,
+            event_cb=event_cb,
         )
-        
+
         return result, is_error
+
+    async def _recovery_events(
+        self,
+        tool_call: ToolCall,
+        state: AgentState,
+    ) -> AsyncGenerator[AgentEventData | tuple[str, bool], None]:
+        """
+        运行 _execute_with_recovery，并在执行期间实时 yield 中间事件
+        （如 RETRYING）。最后 yield 一个 (result, is_error) 元组作为结果哨兵。
+
+        用法：
+            async for item in self._recovery_events(tc, state):
+                if isinstance(item, tuple):
+                    result, is_error = item
+                else:
+                    yield item  # 转发中间事件
+        """
+        queue: asyncio.Queue[AgentEventData] = asyncio.Queue()
+
+        def _cb(ev: AgentEventData) -> None:
+            queue.put_nowait(ev)
+
+        task = asyncio.ensure_future(
+            self._execute_with_recovery(tool_call, state, event_cb=_cb)
+        )
+
+        # 边执行边把队列里的事件吐出去
+        while not task.done():
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.05)
+                yield ev
+            except asyncio.TimeoutError:
+                continue
+
+        # 排空剩余事件
+        while not queue.empty():
+            yield queue.get_nowait()
+
+        result, is_error = await task
+        yield (result, is_error)
