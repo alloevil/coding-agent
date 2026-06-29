@@ -29,9 +29,9 @@ def registry():
     """测试工具注册中心"""
     from coding_agent.tools.registry import ToolRegistry
     reg = ToolRegistry()
-    register_file_tools()
-    register_shell_tools()
-    register_git_tools()
+    register_file_tools(reg)
+    register_shell_tools(reg)
+    register_git_tools(reg)
     return reg
 
 

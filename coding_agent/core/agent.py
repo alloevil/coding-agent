@@ -177,44 +177,47 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         session_store: "SessionStore | None" = None,
         retry_config: RetryConfig | None = None,
+        register_builtin_tools: bool = True,
+        spawn_depth: int = 0,
     ):
         self.config = config
         self.tool_registry = tool_registry or get_registry()
-        
+
         # 延迟导入避免循环依赖
         if session_store is None:
             from ..memory.session import SessionStore
             session_store = SessionStore(db_path=config.session_db_path)
         self.session_store = session_store
-        
+
         self.context_manager = ContextManager(max_tokens=config.max_context_tokens)
-        
+
         # 模型调用函数（需要外部注入）
         self._model_call_fn: Any = None
-        
+
         # 权限确认回调
         self._permission_handler: PermissionHandler | None = None
-        
+
         # 子代理深度追踪（0 = 根代理）
-        self._spawn_depth: int = 0
-        
+        self._spawn_depth: int = spawn_depth
+
         # ---- 中断恢复 ----
         self._interrupt_event = asyncio.Event()
         self._interrupted: bool = False
-        
+
         # ---- 错误恢复 ----
         self.retry_config = retry_config or RetryConfig()
-        
+
         # ---- 工具回滚 ----
         self.rollback_log = RollbackLog()
-        
-        # 自动注册子代理工具（延迟导入避免循环依赖）
-        from ..tools.agent_ops import register_agent_tools
-        register_agent_tools(self.tool_registry, self)
-        
-        # 注册回滚工具
-        self._register_rollback_tool()
-    
+
+        # 自动注册子代理工具 + 回滚工具。
+        # 子代理传 register_builtin_tools=False，避免用自己的引用覆盖父代理
+        # 已注册的 agent_spawn/agent_parallel（它们共享同一个 tool_registry）。
+        if register_builtin_tools:
+            from ..tools.agent_ops import register_agent_tools
+            register_agent_tools(self.tool_registry, self)
+            self._register_rollback_tool()
+
     def set_model_call_fn(self, fn: Any) -> None:
         """设置模型调用函数"""
         self._model_call_fn = fn

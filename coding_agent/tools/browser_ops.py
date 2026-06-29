@@ -478,14 +478,15 @@ async def _fallback_dom_snapshot(page: Any) -> str:
 
 # ── 注册 ────────────────────────────────────────────────────────
 
-def register_browser_tools() -> None:
+def register_browser_tools(registry: Any = None) -> None:
     """注册所有浏览器控制工具"""
-    from .registry import register_tool
+    from .registry import get_registry
 
-    register_tool(BrowserOpenTool())
-    register_tool(BrowserScreenshotTool())
-    register_tool(BrowserClickTool())
-    register_tool(BrowserTypeTool())
-    register_tool(BrowserEvaluateTool())
-    register_tool(BrowserSnapshotTool())
-    register_tool(BrowserCloseTool())
+    reg = registry or get_registry()
+    reg.register(BrowserOpenTool())
+    reg.register(BrowserScreenshotTool())
+    reg.register(BrowserClickTool())
+    reg.register(BrowserTypeTool())
+    reg.register(BrowserEvaluateTool())
+    reg.register(BrowserSnapshotTool())
+    reg.register(BrowserCloseTool())

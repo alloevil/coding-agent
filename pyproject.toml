@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "coding-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI coding assistant inspired by Claude Code architecture"
 readme = "README.md"
 license = {text = "MIT"}
@@ -15,19 +15,21 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.optional-dependencies]
 browser = [
     "playwright>=1.40.0",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
 
 [project.scripts]
-coding-agent = "coding_agent.main:main"
+coding-agent = "coding_agent.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["coding_agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

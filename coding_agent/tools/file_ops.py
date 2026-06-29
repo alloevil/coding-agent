@@ -426,13 +426,14 @@ class ListFilesTool(Tool):
             return f"Error listing files: {str(e)}"
 
 
-def register_file_tools() -> None:
+def register_file_tools(registry: Any = None) -> None:
     """注册所有文件操作工具"""
-    from .registry import register_tool
-    
-    register_tool(FileReadTool())
-    register_tool(FileWriteTool())
-    register_tool(FileEditTool())
-    register_tool(FileSearchTool())
-    register_tool(GrepTool())
-    register_tool(ListFilesTool())
+    from .registry import get_registry
+
+    reg = registry or get_registry()
+    reg.register(FileReadTool())
+    reg.register(FileWriteTool())
+    reg.register(FileEditTool())
+    reg.register(FileSearchTool())
+    reg.register(GrepTool())
+    reg.register(ListFilesTool())

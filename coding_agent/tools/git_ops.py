@@ -247,11 +247,12 @@ class GitLogTool(Tool):
             return f"Error getting git log: {str(e)}"
 
 
-def register_git_tools() -> None:
+def register_git_tools(registry: Any = None) -> None:
     """注册所有 git 工具"""
-    from .registry import register_tool
-    
-    register_tool(GitStatusTool())
-    register_tool(GitDiffTool())
-    register_tool(GitCommitTool())
-    register_tool(GitLogTool())
+    from .registry import get_registry
+
+    reg = registry or get_registry()
+    reg.register(GitStatusTool())
+    reg.register(GitDiffTool())
+    reg.register(GitCommitTool())
+    reg.register(GitLogTool())

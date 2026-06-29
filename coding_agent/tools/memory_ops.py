@@ -244,16 +244,18 @@ class MemoryReadTool(Tool):
             raise ToolExecutionError(self.name, str(e))
 
 
-def register_memory_tools(get_project_root: Any = None) -> None:
+def register_memory_tools(get_project_root: Any = None, registry: Any = None) -> None:
     """
     注册记忆工具到工具注册中心
 
     Args:
         get_project_root: 可调用对象，返回当前项目根目录。
                           如果为 None，则使用当前工作目录。
+        registry: 目标工具注册中心，默认为全局注册中心。
     """
-    from .registry import register_tool
+    from .registry import get_registry
 
-    register_tool(MemorySaveTool(get_project_root=get_project_root))
-    register_tool(MemorySearchTool(get_project_root=get_project_root))
-    register_tool(MemoryReadTool(get_project_root=get_project_root))
+    reg = registry or get_registry()
+    reg.register(MemorySaveTool(get_project_root=get_project_root))
+    reg.register(MemorySearchTool(get_project_root=get_project_root))
+    reg.register(MemoryReadTool(get_project_root=get_project_root))

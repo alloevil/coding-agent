@@ -346,5 +346,13 @@ async def main() -> None:
     await agent.start()
 
 
+def cli() -> None:
+    """Synchronous entry point for the `coding-agent` console script."""
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nGoodbye!")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    cli()
