@@ -5,8 +5,8 @@ A lightweight, modular AI coding agent framework inspired by [Claude Code](https
 ## ✨ Features
 
 - **Agent Loop** — AsyncGenerator-based while-loop with streaming support
-- **Tool System** — Pluggable tools with hook-based lifecycle (27 events)
-- **Context Management** — 5-layer progressive compression (Budget → Snip → Microcompact → Collapse → Auto-Compact)
+- **Tool System** — Pluggable tools with a hook-based lifecycle (pre/post tool use, model call, error, compact)
+- **Context Management** — progressive compaction: per-result truncation (snip) → model summarization of older history while keeping recent turns verbatim → hard budget reduction, all preserving tool-call/result pairing
 - **Memory System** — SQLite-based session persistence with project memory
 - **Permission System** — Deny-first, gradual trust model
 - **Built-in Tools** — File ops, shell, git, LSP, browser, TDD
@@ -122,25 +122,33 @@ python benchmarks/run_multi.py
 
 | Tool | Permission | Description |
 |------|------------|-------------|
-| `file_read` | READ | Read file contents |
+| `file_read` | READ | Read file contents (binary/size guarded) |
 | `file_write` | WRITE | Create/overwrite files |
-| `file_edit` | WRITE | Precise text replacement |
-| `file_search` | READ | Find files by pattern |
-| `grep` | READ | Search file contents |
-| `shell_exec` | EXECUTE | Run shell commands |
-| `git_status` | READ | Git status |
-| `git_diff` | READ | Git diff |
-| `git_commit` | WRITE | Git commit |
-| `git_log` | READ | Git log |
+| `file_edit` | WRITE | Precise text replacement (`replace_all` option) |
+| `apply_patch` | WRITE | Atomic multi-file add/update/delete patch |
+| `file_search` | READ | Find files by glob (skips `.git`/`node_modules`/…) |
+| `grep` | READ | Search file contents (skips noise dirs) |
 | `list_files` | READ | List directory contents |
+| `shell_exec` | EXECUTE | Run shell commands (sandboxed) |
+| `git_status` / `git_diff` / `git_log` | READ | Git inspection |
+| `git_commit` | WRITE | Git commit |
+| `tdd_run_tests` | EXECUTE | Run the project's test suite (auto-detected) |
+| `tdd_fix_loop` / `tdd_watch` | EXECUTE | TDD fix loop / watch mode |
+| `update_plan` | READ | Track a multi-step plan |
+| `memory_save` / `memory_search` / `memory_read` | READ/WRITE | Project memory |
+| `agent_spawn` / `agent_parallel` | EXECUTE | Run sub-agents |
+| `rollback_last` | WRITE | Undo the last write/edit |
+
+Plus optional LSP and browser tool groups. The agent also loads project
+conventions from `AGENTS.md` / `CLAUDE.md` (walked from cwd to repo root).
 
 ## 📐 Design Principles
 
-1. **Deny-first** — Default deny, strict rules override宽松规则
-2. **Context as scarce resource** — 5-layer compression pipeline
-3. **Append-only durable state** — Append-only persistence
-4. **Transparent config** — User-visible configuration
-5. **Hook system** — 27 lifecycle events, zero-cost injection
+1. **Deny-first** — Default deny; stricter rules override looser ones
+2. **Context as scarce resource** — progressive compaction pipeline (see above)
+3. **Append-only durable state** — append-only message persistence
+4. **Transparent config** — user-visible configuration
+5. **Hook system** — lifecycle hooks (pre/post tool, model call, error, compact)
 
 ## 🤝 Contributing
 
