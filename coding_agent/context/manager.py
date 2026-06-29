@@ -10,6 +10,7 @@ Context 管理 - 组装 + 压缩
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 from ..core.state import AgentState, Message, MessageRole
 
@@ -81,108 +82,180 @@ class ContextManager:
     
     async def compact(self, state: AgentState, model_call_fn: Any) -> None:
         """
-        执行 context 压缩
-        
-        参考 Claude Code 的 5 层压缩策略，从便宜到贵：
-        1. Budget Reduction - 简单截断
-        2. Snip - 裁剪不重要的部分
-        3. Microcompact - 微压缩
-        4. Context Collapse - 上下文折叠
-        5. Auto-Compact - 自动压缩（需要模型调用）
+        执行 context 压缩，从便宜到贵：
+        1. Snip - 截断过长的工具结果（不丢消息）
+        2. Auto-Compact - 用模型总结较旧的历史，保留最近若干轮原文
+        3. Budget Reduction - 兜底硬截断（保持 tool 配对完整）
         """
-        # 尝试便宜的压缩方式
-        if self._try_budget_reduction(state):
+        # 第 1 层：先尝试截断超长工具结果（最便宜，不丢消息）
+        self._try_snip(state)
+        if state.get_token_estimate() <= self.max_tokens * 0.8:
             return
-        
-        if self._try_snip(state):
-            return
-        
-        # 如果便宜的方式不够，使用模型压缩
-        await self._auto_compact(state, model_call_fn)
-    
+
+        # 第 2 层：模型总结较旧历史
+        if model_call_fn is not None:
+            try:
+                await self._auto_compact(state, model_call_fn)
+                if state.get_token_estimate() <= self.max_tokens * 0.8:
+                    return
+            except Exception:
+                pass  # 落到兜底截断
+
+        # 第 3 层：兜底硬截断
+        self._try_budget_reduction(state)
+
+    # 最近保留的轮次数（用户/助手回合），不参与总结
+    RECENT_KEEP_MESSAGES = 12
+
+    def _safe_split_index(self, messages: list[Message], desired: int) -> int:
+        """
+        给定一个期望的保留起点 desired（保留 messages[desired:]），
+        向后调整到一个“安全”边界：保留窗口的第一条不能是 tool 结果消息
+        （否则它会孤立于其 assistant tool_calls 之外，导致 API 报错）。
+
+        返回调整后的 split index（保证保留窗口自洽）。
+        """
+        idx = max(0, min(desired, len(messages)))
+        # 若保留窗口以 tool 结果开头，向后推进直到不是 tool 消息
+        while idx < len(messages) and messages[idx].role == MessageRole.TOOL:
+            idx += 1
+        return idx
+
     def _try_budget_reduction(self, state: AgentState) -> bool:
         """
-        第 1 层：Budget Reduction - 简单截断
-        
-        策略：移除最旧的消息，保留最近的消息
+        Budget Reduction - 硬截断。
+
+        移除最旧的消息，保留最近的消息；保证截断后保留窗口不以
+        孤立的 tool 结果开头。
         """
-        estimated_tokens = state.get_token_estimate()
-        target_tokens = int(self.max_tokens * 0.7)  # 目标降到 70%
-        
-        if estimated_tokens <= target_tokens:
+        target_tokens = int(self.max_tokens * 0.7)
+
+        if state.get_token_estimate() <= target_tokens:
             return True
-        
-        # 移除最旧的消息（保留系统消息和最近的消息）
-        while estimated_tokens > target_tokens and len(state.messages) > 10:
-            # 移除第 0 条消息
-            removed = state.messages.pop(0)
-            estimated_tokens -= self._estimate_message_tokens(removed)
-        
-        return estimated_tokens <= target_tokens
-    
+
+        msgs = state.messages
+        # 从前往后累计要丢弃的消息，直到剩余 token 达标且至少保留几条
+        drop = 0
+        running = state.get_token_estimate()
+        while drop < len(msgs) - 4 and running > target_tokens:
+            running -= self._estimate_message_tokens(msgs[drop])
+            drop += 1
+
+        split = self._safe_split_index(msgs, drop)
+        state.messages = msgs[split:]
+        return state.get_token_estimate() <= target_tokens
+
     def _try_snip(self, state: AgentState) -> bool:
         """
-        第 2 层：Snip - 裁剪
-        
-        策略：截断过长的工具结果
+        Snip - 裁剪：截断过长的工具结果（保留 head + tail，比单纯截断更有用）。
         """
-        max_tool_result_length = 5000  # 最大工具结果长度
-        
+        max_len = 5000
+        head, tail = 3500, 1200
+
         for msg in state.messages:
             if msg.role == MessageRole.TOOL and msg.tool_result:
-                if len(msg.tool_result.content) > max_tool_result_length:
-                    # 截断并添加省略号
+                content = msg.tool_result.content
+                if len(content) > max_len:
+                    omitted = len(content) - head - tail
                     msg.tool_result.content = (
-                        msg.tool_result.content[:max_tool_result_length] 
-                        + "\n... (truncated)"
+                        content[:head]
+                        + f"\n... ({omitted} chars truncated) ...\n"
+                        + content[-tail:]
                     )
-        
+
         return state.get_token_estimate() <= self.max_tokens * 0.8
-    
+
     async def _auto_compact(self, state: AgentState, model_call_fn: Any) -> None:
         """
-        第 5 层：Auto-Compact - 自动压缩
-        
-        策略：使用模型总结历史对话
+        Auto-Compact - 用模型总结较旧的历史。
+
+        策略（参考 Claude Code）：保留最近 RECENT_KEEP_MESSAGES 条原文，
+        把更早的历史交给模型总结为一段文字，作为一条 system 消息前置。
+        这样既回收了 token，又不破坏最近的 tool_call/tool_result 配对。
         """
         if not model_call_fn:
             return
-        
-        # 构建总结请求
-        summary_prompt = """Please provide a concise summary of the conversation so far, focusing on:
-1. What we've accomplished
-2. What we're currently working on
-3. Key decisions made
-4. Any pending tasks
 
-Keep the summary under 1000 words."""
-        
-        # 调用模型生成总结
-        try:
-            summary = await model_call_fn([
-                {"role": "user", "content": summary_prompt}
-            ])
-            
-            # 用总结替换历史消息
-            state.messages = [
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=f"[Context Summary]\n{summary}"
-                )
-            ]
-        except Exception:
-            # 如果总结失败，使用简单的截断
+        msgs = state.messages
+        # 计算保留窗口起点（安全边界）
+        desired = max(0, len(msgs) - self.RECENT_KEEP_MESSAGES)
+        split = self._safe_split_index(msgs, desired)
+
+        older = msgs[:split]
+        recent = msgs[split:]
+
+        if not older:
+            # 没有可总结的旧历史，退回硬截断
             self._try_budget_reduction(state)
-    
+            return
+
+        # 把旧历史渲染成可读文本喂给模型
+        transcript = self._render_transcript(older)
+        summary_request = [
+            {
+                "role": "system",
+                "content": (
+                    "You are summarizing an earlier portion of a coding-agent "
+                    "conversation so it can be dropped from context. Produce a "
+                    "concise but information-dense summary covering: user goals, "
+                    "decisions made, files created/modified (with paths), key "
+                    "command outputs, and any still-pending tasks. Under 800 words."
+                ),
+            },
+            {"role": "user", "content": transcript},
+        ]
+
+        # 真实签名是 (context, tools)；总结调用不需要工具
+        response = await model_call_fn(summary_request, [])
+        summary_text = response.get("content", "") if isinstance(response, dict) else str(response)
+        if not summary_text.strip():
+            # 总结为空，退回硬截断
+            self._try_budget_reduction(state)
+            return
+
+        summary_msg = Message(
+            role=MessageRole.SYSTEM,
+            content=f"[Earlier conversation summary]\n{summary_text}",
+        )
+        state.messages = [summary_msg] + recent
+
+    def _render_transcript(self, messages: list[Message]) -> str:
+        """把消息列表渲染成可读文本，供总结使用。"""
+        lines: list[str] = []
+        for msg in messages:
+            role = msg.role.value
+            if msg.tool_result:
+                lines.append(f"[tool result] {msg.tool_result.content}")
+            elif msg.tool_calls:
+                calls = ", ".join(
+                    f"{tc.name}({json.dumps(tc.arguments, ensure_ascii=False)})"
+                    for tc in msg.tool_calls
+                )
+                text = msg.content or ""
+                lines.append(f"[{role}] {text}\n[tool calls] {calls}")
+            elif isinstance(msg.content, str):
+                lines.append(f"[{role}] {msg.content}")
+            elif isinstance(msg.content, list):
+                joined = " ".join(
+                    item.get("text", "") for item in msg.content
+                    if isinstance(item, dict)
+                )
+                lines.append(f"[{role}] {joined}")
+        return "\n".join(lines)
+
     def _estimate_message_tokens(self, message: Message) -> int:
-        """估算单条消息的 token 数"""
+        """估算单条消息的 token 数（含工具调用参数与工具结果）。"""
+        total = 0
         if message.content:
             if isinstance(message.content, str):
-                return len(message.content) // 4
+                total += len(message.content) // 4
             elif isinstance(message.content, list):
-                total = 0
                 for item in message.content:
                     if isinstance(item, dict) and "text" in item:
                         total += len(item["text"]) // 4
-                return total
-        return 0
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                total += (len(tc.name) + len(json.dumps(tc.arguments))) // 4
+        if message.tool_result and message.tool_result.content:
+            total += len(message.tool_result.content) // 4
+        return total
