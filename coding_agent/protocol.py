@@ -52,10 +52,12 @@ class AgentProtocol:
         from .tools.patch_ops import register_patch_tools
         from .tools.tdd_ops import register_tdd_tools
         from .tools.memory_ops import register_memory_tools
+        from .tools.web_ops import register_web_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
         register_memory_tools()
+        register_web_tools()
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)

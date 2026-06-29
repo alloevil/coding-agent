@@ -8,6 +8,7 @@ from .tdd_ops import register_tdd_tools
 from .memory_ops import register_memory_tools
 from .plan_ops import register_plan_tools, UpdatePlanTool
 from .patch_ops import register_patch_tools, ApplyPatchTool
+from .web_ops import register_web_tools, WebFetchTool
 
 __all__ = [
     "Tool",
@@ -29,4 +30,6 @@ __all__ = [
     "UpdatePlanTool",
     "register_patch_tools",
     "ApplyPatchTool",
+    "register_web_tools",
+    "WebFetchTool",
 ]
