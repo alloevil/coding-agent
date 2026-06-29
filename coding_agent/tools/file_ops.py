@@ -17,6 +17,33 @@ from typing import Any
 
 from .base import Tool, ToolPermission, ToolExecutionError
 
+# 搜索时默认跳过的噪音目录（VCS、依赖、构建产物、虚拟环境等）。
+# 真实仓库里递归这些目录既慢又会淹没结果。
+DEFAULT_IGNORE_DIRS = frozenset({
+    ".git", ".hg", ".svn",
+    "node_modules", "bower_components",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".venv", "venv", "env", ".tox",
+    "dist", "build", ".next", ".nuxt", "target", ".gradle",
+    ".idea", ".vscode", ".cache",
+})
+
+
+def _is_ignored(path: Path, ignore_dirs: frozenset[str]) -> bool:
+    """路径中是否包含任一被忽略的目录名。"""
+    return any(part in ignore_dirs for part in path.parts)
+
+
+def _iter_files(root: Path, include: str | None, ignore_dirs: frozenset[str]):
+    """递归产出文件，跳过被忽略的目录。"""
+    pattern = include or "*"
+    for p in root.rglob(pattern):
+        if not p.is_file():
+            continue
+        if _is_ignored(p.relative_to(root) if p.is_relative_to(root) else p, ignore_dirs):
+            continue
+        yield p
+
 
 class FileReadTool(Tool):
     """读取文件"""
@@ -296,7 +323,13 @@ class FileSearchTool(Tool):
         try:
             full_pattern = os.path.join(root, pattern)
             matches = glob_module.glob(full_pattern, recursive=True)
-            
+
+            # 过滤掉噪音目录中的匹配
+            matches = [
+                m for m in matches
+                if not _is_ignored(Path(m), DEFAULT_IGNORE_DIRS)
+            ]
+
             if not matches:
                 return f"No files found matching '{pattern}'"
             
@@ -342,6 +375,10 @@ class GrepTool(Tool):
                 "include": {
                     "type": "string",
                     "description": "File pattern to include (e.g., '*.py')"
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Also search ignored dirs (.git, node_modules, venv, build...). Default false."
                 }
             },
             "required": ["pattern"]
@@ -353,28 +390,26 @@ class GrepTool(Tool):
     
     async def execute(self, **kwargs: Any) -> str:
         import re
-        
+
         pattern = kwargs.get("pattern")
         path = kwargs.get("path", ".")
         include = kwargs.get("include")
-        
+        include_ignored = kwargs.get("include_ignored", False)
+
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
-        
+
+        ignore_dirs = frozenset() if include_ignored else DEFAULT_IGNORE_DIRS
+
         try:
             results = []
             path_obj = Path(path)
-            
+
             if path_obj.is_file():
                 files = [path_obj]
             else:
-                # 搜索目录
-                if include:
-                    files = list(path_obj.rglob(include))
-                else:
-                    files = list(path_obj.rglob("*"))
-                    files = [f for f in files if f.is_file()]
-            
+                files = list(_iter_files(path_obj, include, ignore_dirs))
+
             for file_path in files:
                 try:
                     content = file_path.read_text(encoding="utf-8")

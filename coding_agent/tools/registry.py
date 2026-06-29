@@ -25,10 +25,13 @@ class ToolRegistry:
     - 获取工具定义列表
     """
     
-    def __init__(self) -> None:
+    def __init__(self, max_result_chars: int = 30000) -> None:
         self._tools: dict[str, Tool] = {}
         self._hooks: dict[HookEvent, list[Hook]] = {event: [] for event in HookEvent}
         self._disabled_tools: set[str] = set()
+        # 单条工具结果的字符上限：超过则 head+tail 截断，
+        # 防止单次巨大输出（冗长构建/大范围 grep）撑爆下一次模型请求。
+        self.max_result_chars = max_result_chars
     
     def register(self, tool: Tool) -> None:
         """注册工具"""
@@ -109,7 +112,28 @@ class ToolRegistry:
             if result is True:
                 return True
         return False
-    
+
+    def _truncate_result(self, result: str) -> str:
+        """
+        把超长工具结果截断为 head + tail，并标注省略的字符数。
+
+        保留头尾通常比单纯保留头部更有用：错误/摘要往往在末尾，
+        而命令/文件开头也常包含关键信息。
+        """
+        if not isinstance(result, str):
+            return result
+        cap = self.max_result_chars
+        if cap <= 0 or len(result) <= cap:
+            return result
+        head = int(cap * 0.7)
+        tail = cap - head
+        omitted = len(result) - head - tail
+        return (
+            result[:head]
+            + f"\n\n... [{omitted} characters truncated by tool-output limit] ...\n\n"
+            + result[-tail:]
+        )
+
     async def execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """
         执行工具
@@ -136,7 +160,10 @@ class ToolRegistry:
         
         try:
             result = await tool.execute(**arguments)
-            
+
+            # 边界保护：截断超长结果（head+tail）
+            result = self._truncate_result(result)
+
             # Post-tool hook
             post_context = HookContext(
                 event=HookEvent.POST_TOOL_USE,
@@ -145,7 +172,7 @@ class ToolRegistry:
                 tool_result=result
             )
             await self.run_hooks(HookEvent.POST_TOOL_USE, post_context)
-            
+
             return result
         except Exception as e:
             # Error hook
