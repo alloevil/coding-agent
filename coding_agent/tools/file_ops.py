@@ -58,30 +58,47 @@ class FileReadTool(Tool):
         path = kwargs.get("path")
         offset = kwargs.get("offset", 1)
         limit = kwargs.get("limit")
-        
+
         if not path:
             raise ToolExecutionError(self.name, "path is required")
-        
+
         try:
             file_path = Path(path)
             if not file_path.exists():
                 return f"Error: File '{path}' does not exist"
-            
-            with open(file_path, "r", encoding="utf-8") as f:
+            if file_path.is_dir():
+                return f"Error: '{path}' is a directory, not a file"
+
+            # 大文件保护：超过 5MB 时拒绝整文件读取，提示使用 offset/limit
+            MAX_BYTES = 5 * 1024 * 1024
+            size = file_path.stat().st_size
+            if size > MAX_BYTES and not limit:
+                return (
+                    f"Error: File '{path}' is {size // 1024} KB, too large to read "
+                    f"in full. Pass 'offset' and 'limit' to read a slice, or use grep."
+                )
+
+            # 二进制文件保护：检测 NUL 字节
+            with open(file_path, "rb") as fb:
+                head = fb.read(8192)
+            if b"\x00" in head:
+                return f"Error: '{path}' appears to be a binary file; cannot display as text"
+
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
-            
+
             # 应用 offset 和 limit
             start = max(0, offset - 1)  # 转换为 0-indexed
             if limit:
                 lines = lines[start:start + limit]
             else:
                 lines = lines[start:]
-            
+
             # 添加行号
             result = []
             for i, line in enumerate(lines, start=start + 1):
                 result.append(f"{i:4d} | {line.rstrip()}")
-            
+
             return "\n".join(result)
         except Exception as e:
             return f"Error reading file: {str(e)}"
@@ -168,50 +185,70 @@ class FileEditTool(Tool):
                 },
                 "old_text": {
                     "type": "string",
-                    "description": "Exact text to find and replace (must be unique)"
+                    "description": "Exact text to find and replace (must be unique unless replace_all=true)"
                 },
                 "new_text": {
                     "type": "string",
                     "description": "New text to replace with"
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence instead of requiring a unique match (default false)"
                 }
             },
             "required": ["path", "old_text", "new_text"]
         }
-    
+
     @property
     def permission(self) -> ToolPermission:
         return ToolPermission.WRITE
-    
+
     async def execute(self, **kwargs: Any) -> str:
         path = kwargs.get("path")
         old_text = kwargs.get("old_text")
         new_text = kwargs.get("new_text")
-        
+        replace_all = kwargs.get("replace_all", False)
+
         if not path:
             raise ToolExecutionError(self.name, "path is required")
         if old_text is None:
             raise ToolExecutionError(self.name, "old_text is required")
         if new_text is None:
             raise ToolExecutionError(self.name, "new_text is required")
-        
+        if old_text == new_text:
+            return "Error: old_text and new_text are identical; nothing to do"
+
         try:
             file_path = Path(path)
             if not file_path.exists():
                 return f"Error: File '{path}' does not exist"
-            
+
             content = file_path.read_text(encoding="utf-8")
-            
-            # 检查 old_text 是否存在
+
             count = content.count(old_text)
             if count == 0:
                 return f"Error: old_text not found in '{path}'"
-            if count > 1:
-                return f"Error: old_text found {count} times in '{path}', must be unique"
-            
-            # 执行替换
+            if count > 1 and not replace_all:
+                # 给出每个匹配所在行号，帮助模型消歧
+                line_nums = []
+                idx = 0
+                for ln, line in enumerate(content.splitlines(), 1):
+                    if old_text.splitlines()[0] in line:
+                        line_nums.append(ln)
+                hint = f" (matches near lines {line_nums[:10]})" if line_nums else ""
+                return (
+                    f"Error: old_text found {count} times in '{path}', must be unique. "
+                    f"Add more surrounding context, or pass replace_all=true to replace "
+                    f"all occurrences.{hint}"
+                )
+
+            if replace_all:
+                new_content = content.replace(old_text, new_text)
+                file_path.write_text(new_content, encoding="utf-8")
+                return f"Successfully edited '{path}' ({count} occurrences replaced)"
+
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
-            
             return f"Successfully edited '{path}'"
         except Exception as e:
             return f"Error editing file: {str(e)}"
