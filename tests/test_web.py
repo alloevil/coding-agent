@@ -71,3 +71,65 @@ async def test_fetch_truncates(monkeypatch):
                                  headers={"content-type": "text/html"})))
     out = await WebFetchTool().execute(url="https://example.com/big", max_chars=1000)
     assert "truncated at 1000 chars" in out
+
+
+# ── web_search ──────────────────────────────────────────────────────────────
+
+from coding_agent.tools.web_ops import WebSearchTool, parse_search_results, _decode_ddg_href
+
+_DDG_HTML = """
+<html><body>
+<div class="result results_links">
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org%2F3%2Flibrary%2Fasyncio.html&rut=x">asyncio — Asynchronous I/O</a>
+  <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org">asyncio is a library to write concurrent code using async/await syntax.</a>
+</div>
+<div class="result results_links">
+  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frealpython.com%2Fasync-io-python%2F&rut=y">Async IO in Python</a>
+  <a class="result__snippet">A complete walkthrough of async IO.</a>
+</div>
+</body></html>
+"""
+
+
+def test_decode_ddg_href():
+    href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org%2F3%2F&rut=abc"
+    assert _decode_ddg_href(href) == "https://docs.python.org/3/"
+    assert _decode_ddg_href("//example.com/x") == "https://example.com/x"
+    assert _decode_ddg_href("") == ""
+
+
+def test_parse_search_results():
+    results = parse_search_results(_DDG_HTML)
+    assert len(results) == 2
+    assert results[0]["title"] == "asyncio — Asynchronous I/O"
+    assert results[0]["url"] == "https://docs.python.org/3/library/asyncio.html"
+    assert "concurrent code" in results[0]["snippet"]
+    assert results[1]["url"] == "https://realpython.com/async-io-python/"
+
+
+def test_parse_search_results_respects_limit():
+    assert len(parse_search_results(_DDG_HTML, limit=1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_web_search_formats_results(monkeypatch):
+    _patch_client(monkeypatch, httpx.MockTransport(
+        lambda r: httpx.Response(200, content=_DDG_HTML.encode())))
+    out = await WebSearchTool().execute(query="python asyncio")
+    assert "docs.python.org" in out
+    assert "1. asyncio" in out
+    assert "realpython.com" in out
+
+
+@pytest.mark.asyncio
+async def test_web_search_empty_query():
+    out = await WebSearchTool().execute(query="")
+    assert out.startswith("Error")
+
+
+@pytest.mark.asyncio
+async def test_web_search_no_results(monkeypatch):
+    _patch_client(monkeypatch, httpx.MockTransport(
+        lambda r: httpx.Response(200, content=b"<html><body>nothing</body></html>")))
+    out = await WebSearchTool().execute(query="zzzznomatch")
+    assert "No results found" in out

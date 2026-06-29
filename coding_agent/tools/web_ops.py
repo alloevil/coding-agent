@@ -176,9 +176,163 @@ class WebFetchTool(Tool):
         return f"{header}URL: {url}\n\n{text}"
 
 
+# ---------------------------------------------------------------------------
+# web_search
+# ---------------------------------------------------------------------------
+
+# DuckDuckGo 的无 key HTML 端点（结果稳定、可解析）
+DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+MAX_RESULTS = 8
+
+
+class _DDGResultParser(HTMLParser):
+    """
+    解析 DuckDuckGo HTML 结果页：
+    - 结果标题链接 class="result__a"，href 形如
+      //duckduckgo.com/l/?uddg=<urlencoded real url>
+    - 摘要 class="result__snippet"
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self._cur: dict[str, str] | None = None
+        self._capture: str | None = None  # "title" | "snippet"
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        ad = dict(attrs)
+        cls = ad.get("class", "") or ""
+        if tag == "a" and "result__a" in cls:
+            self._cur = {"title": "", "url": _decode_ddg_href(ad.get("href", "")), "snippet": ""}
+            self._capture = "title"
+        elif tag == "a" and "result__snippet" in cls:
+            self._capture = "snippet"
+        elif tag in ("div", "td") and "result__snippet" in cls:
+            self._capture = "snippet"
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._capture == "title" and self._cur is not None:
+            # 标题结束：把当前结果存入（snippet 可能稍后补）
+            if self._cur not in self.results:
+                self.results.append(self._cur)
+            self._capture = None
+        elif self._capture == "snippet" and tag in ("a", "div", "td"):
+            self._capture = None
+
+    def handle_data(self, data: str) -> None:
+        if self._capture == "title" and self._cur is not None:
+            self._cur["title"] += data
+        elif self._capture == "snippet":
+            # 归属到最近一个结果
+            if self.results:
+                self.results[-1]["snippet"] += data
+
+
+def _decode_ddg_href(href: str) -> str:
+    """从 DDG 跳转链接里解出真实 URL（uddg 参数）。"""
+    from urllib.parse import urlparse, parse_qs, unquote
+    if not href:
+        return ""
+    if "uddg=" in href:
+        try:
+            qs = parse_qs(urlparse(href).query)
+            if "uddg" in qs:
+                return unquote(qs["uddg"][0])
+        except Exception:
+            pass
+    if href.startswith("//"):
+        return "https:" + href
+    return href
+
+
+def parse_search_results(html: str, limit: int = MAX_RESULTS) -> list[dict[str, str]]:
+    """解析搜索结果页，返回 [{title,url,snippet}]。"""
+    parser = _DDGResultParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        return []
+    out = []
+    for r in parser.results:
+        title = " ".join(r["title"].split()).strip()
+        url = r["url"].strip()
+        snippet = " ".join(r["snippet"].split()).strip()
+        if title and url:
+            out.append({"title": title, "url": url, "snippet": snippet})
+        if len(out) >= limit:
+            break
+    return out
+
+
+class WebSearchTool(Tool):
+    """搜索网络，返回标题/URL/摘要列表（DuckDuckGo，无需 key）。"""
+
+    @property
+    def name(self) -> str:
+        return "web_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Search the web and return a list of results (title, URL, snippet). "
+            "Use this to find documentation, libraries, error messages, or recent "
+            "information, then web_fetch a result URL to read it. Keyless "
+            "(DuckDuckGo). Returns up to 8 results."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query"},
+                "max_results": {
+                    "type": "integer",
+                    "description": f"Max results to return (default {MAX_RESULTS})",
+                },
+            },
+            "required": ["query"],
+        }
+
+    @property
+    def permission(self) -> ToolPermission:
+        return ToolPermission.READ
+
+    async def execute(self, **kwargs: Any) -> str:
+        query = kwargs.get("query")
+        limit = kwargs.get("max_results") or MAX_RESULTS
+        if not query:
+            return "Error: 'query' is required"
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                resp = await client.post(
+                    DDG_HTML_URL,
+                    data={"q": query},
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; coding-agent/0.2)"},
+                )
+                resp.raise_for_status()
+        except httpx.TimeoutException:
+            return f"Error: web search timed out for query: {query!r}"
+        except httpx.HTTPError as e:
+            return f"Error performing web search: {e}"
+
+        results = parse_search_results(resp.text, limit=limit)
+        if not results:
+            return f"No results found for: {query!r}"
+
+        lines = [f"Search results for {query!r}:\n"]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r['title']}\n   {r['url']}")
+            if r["snippet"]:
+                lines.append(f"   {r['snippet'][:200]}")
+        return "\n".join(lines)
+
+
 def register_web_tools(registry: Any = None) -> None:
     """注册 web 工具。"""
     from .registry import get_registry
 
     reg = registry or get_registry()
     reg.register(WebFetchTool())
+    reg.register(WebSearchTool())
