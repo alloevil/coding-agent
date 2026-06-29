@@ -36,13 +36,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from coding_agent.core.agent import AgentLoop, AgentEvent, AgentEventData, AgentConfig
 from coding_agent.core.state import AgentState
-from coding_agent.tools import get_registry
+from coding_agent.core.model_client import ModelClient
+from coding_agent.tools.registry import ToolRegistry
 from coding_agent.tools.file_ops import register_file_tools
 from coding_agent.tools.shell import register_shell_tools
 from coding_agent.tools.git_ops import register_git_tools
 from coding_agent.tools.lsp_ops import register_lsp_tools
 from coding_agent.tools.browser_ops import register_browser_tools
 from coding_agent.tools.tdd_ops import register_tdd_tools
+from coding_agent.tools.memory_ops import register_memory_tools
+from coding_agent.tools.plan_ops import register_plan_tools
+from coding_agent.tools.patch_ops import register_patch_tools
 
 
 # ===========================================================================
@@ -1226,10 +1230,20 @@ def g(a):
 class BenchmarkRunner:
     """Benchmark 执行器"""
     
-    def __init__(self, api_key: str, model: str = "xiaomi/mimo-v2.5-pro"):
+    def __init__(self, api_key: str, model: str = "xiaomi/mimo-v2.5-pro",
+                 base_url: str = "http://model.mify.ai.srv/v1"):
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url
         self.results: list[BenchmarkResult] = []
+        # 与生产一致的统一模型客户端（带退避重试）
+        self.model_client = ModelClient(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_tokens=2048,
+            temperature=0.7,
+        )
     
     async def run_case(self, case: BenchmarkCase) -> BenchmarkResult:
         """运行单个测试用例"""
@@ -1242,14 +1256,17 @@ class BenchmarkRunner:
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(content)
         
-        # 初始化工具
-        registry = get_registry()
-        registry._tools.clear()
-        
-        register_file_tools()
-        register_shell_tools()
-        register_git_tools()
-        
+        # 初始化工具：与生产 CodingAgent 一致的完整工具集，
+        # 使用独立 registry（不污染全局，且与改进后的注册逻辑一致）
+        registry = ToolRegistry()
+        register_file_tools(registry)
+        register_shell_tools(registry)
+        register_git_tools(registry)
+        register_tdd_tools(registry)
+        register_memory_tools(registry=registry)
+        plan_tool = register_plan_tools(registry=registry)
+        register_patch_tools(registry)
+
         # 切换 cwd 到 workdir（确保工具在正确目录执行）
         old_cwd = os.getcwd()
         os.chdir(workdir)
@@ -1258,7 +1275,7 @@ class BenchmarkRunner:
         config = AgentConfig(
             model=self.model,
             api_key=self.api_key,
-            api_base_url="http://model.mify.ai.srv/v1",
+            api_base_url=self.base_url,
             max_turns=case.max_turns,
             auto_approve=True,
             system_prompt=(
@@ -1272,17 +1289,20 @@ class BenchmarkRunner:
                 f"3. For complex tasks, save your work as files in the working directory. "
                 f"Shell commands alone are not enough — create the actual script files.\n"
                 f"4. Always create files with .py extension when writing Python code.\n"
-                f"5. When asked to build something, create ALL required files before testing."
+                f"5. When asked to build something, create ALL required files before testing.\n"
+                f"6. For multi-step tasks, call update_plan first to lay out steps, then keep it current.\n"
+                f"7. Prefer apply_patch for multi-file or multi-location edits."
             )
         )
-        
+
         agent = AgentLoop(config=config, tool_registry=registry)
-        
+
         # 设置模型调用
         agent.set_model_call_fn(self._call_model)
-        
+
         # 运行
         state = AgentState()
+        plan_tool.bind_state(state)
         tool_calls = []
         start_time = time.time()
         
@@ -1351,54 +1371,10 @@ class BenchmarkRunner:
                 pass
     
     async def _call_model(self, context: list[dict], tools: list[dict]) -> dict:
-        """调用模型（带重试）"""
-        import urllib.request
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        payload = {
-            "model": self.model,
-            "messages": context,
-            "max_tokens": 2048,
-            "temperature": 0.7,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                def _call():
-                    req = urllib.request.Request(
-                        "http://model.mify.ai.srv/v1/chat/completions",
-                        data=json.dumps(payload).encode(),
-                        headers=headers
-                    )
-                    with urllib.request.urlopen(req, timeout=120) as resp:
-                        return json.loads(resp.read())
-                
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, _call)
-                
-                choice = data["choices"][0]
-                message = choice["message"]
-                
-                return {
-                    "content": message.get("content", ""),
-                    "tool_calls": message.get("tool_calls", [])
-                }
-            except Exception as e:
-                if "429" in str(e) and attempt < max_retries - 1:
-                    # Exponential backoff: 10s, 20s, 40s, 80s
-                    wait = 10 * (2 ** attempt)
-                    print(f"⏳ 429 rate limited, waiting {wait}s (attempt {attempt+1}/{max_retries})", flush=True)
-                    await asyncio.sleep(wait)
-                    continue
-                raise
-    
+        """调用模型。委托给统一的 ModelClient（含退避重试，与生产一致）。
+        benchmark 不需要流式，关闭以减少开销。"""
+        return await self.model_client.complete(context, tools, stream=False)
+
     async def run_all(self, cases: list[BenchmarkCase] | None = None) -> BenchmarkReport:
         """运行所有测试"""
         cases = cases or BENCHMARK_CASES
@@ -1495,13 +1471,26 @@ def print_report(report: BenchmarkReport) -> None:
 
 
 async def main():
-    """主函数"""
-    api_key = os.environ.get("MODEL_API_KEY", "")
+    """主函数。
+
+    支持两种配置来源（优先级从高到低）：
+    - MODEL_API_KEY + MODEL_BASE_URL + MODEL_PRIMARY（小米 mify 环境）
+    - OPENAI_API_KEY + OPENAI_API_BASE + CODING_AGENT_MODEL（任意 OpenAI 兼容端点）
+    """
+    api_key = os.environ.get("MODEL_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     if not api_key:
-        print("Error: MODEL_API_KEY not set")
+        print("Error: set MODEL_API_KEY (mify) or OPENAI_API_KEY (any OpenAI-compatible endpoint)")
         sys.exit(1)
-    
-    runner = BenchmarkRunner(api_key=api_key)
+
+    if os.environ.get("MODEL_API_KEY"):
+        base_url = os.environ.get("MODEL_BASE_URL", "http://model.mify.ai.srv/v1")
+        model = os.environ.get("MODEL_PRIMARY", "xiaomi/mimo-v2.5-pro")
+    else:
+        base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+        model = os.environ.get("CODING_AGENT_MODEL", "gpt-4o-mini")
+
+    print(f"Endpoint: {base_url}  Model: {model}")
+    runner = BenchmarkRunner(api_key=api_key, model=model, base_url=base_url)
     report = await runner.run_all()
     print_report(report)
     
