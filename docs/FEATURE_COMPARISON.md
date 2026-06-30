@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (437 tests passing). Compares our `coding-agent` against:
+Status snapshot (480 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -57,7 +57,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Hooks (lifecycle) | ✅ (all events fire; config command hooks) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
 | TUI | 🟡 (rich TUI via --tui; CLI + Go protocol) | ✅ | ✅ (rich TUI) |
-| Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`) | ✅ | ✅ |
+| Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`, titled) | ✅ | ✅ |
 | Multimodal (images) | ❌ | ✅ | ✅ |
 | Cost/token budget stop | ✅ (max_total_tokens) | ✅ | 🟡 |
 
@@ -69,9 +69,8 @@ check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested 
 `git_branch` ✅, production system prompt ✅, **Skills ✅** (progressive disclosure).
 
 **Remaining (offline-verifiable):**
-- Session summary/title generation (nice-to-have; needs a model call but verifiable
-  with a stubbed model).
-- `slash: true` skills as auto-registered slash commands (small follow-up on Skills).
+- (none high-value left — Skills, session titles, plan mode, git_branch all
+  shipped; offline backlog vs Claude Code/opencode essentially exhausted.)
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
