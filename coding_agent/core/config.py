@@ -36,6 +36,8 @@ class AgentConfig:
     max_tokens: int = 4096
     temperature: float | None = 0.7  # None 时省略该字段（GPT-5 等只接受默认温度）
     extra_headers: dict[str, str] = field(default_factory=dict)  # 网关自定义 header
+    # 后端协议：openai（/chat/completions）或 anthropic（/v1/messages）
+    protocol: str = "openai"
     
     # Context 配置
     max_context_tokens: int = 200000
@@ -47,12 +49,19 @@ class AgentConfig:
     stream: bool = True  # 是否流式输出
     # 累计 token 预算（输入+输出+推理）；<=0 表示不限制。超出后停止本轮循环。
     max_total_tokens: int = 0
+    # 单个工具执行超时（秒）；<=0 表示不限制。防止挂死调用冻结 agent。
+    tool_timeout_seconds: float = 120.0
+    # 写后自动格式化（prettier/gofmt/black/ruff/...，缺则跳过）。
+    auto_format: bool = True
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     # 生命周期 hook：{"pre_tool_use": [{"command": "..."}], "post_tool_use": [...], ...}
     hooks: dict[str, Any] = field(default_factory=dict)
+    # 多 provider 配置：{"name": {"base_url":..., "api_key":..., "model":...,
+    #   "extra_headers": {...}}}，供 /model 在会话中切换。
+    providers: dict[str, Any] = field(default_factory=dict)
     
     # 会话配置
     session_db_path: str = "/tmp/.coding-agent/sessions.db"

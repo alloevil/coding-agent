@@ -48,10 +48,13 @@ class ModelClient:
         backoff_factor: float = 2.0,
         extra_headers: dict[str, str] | None = None,
         prompt_cache_key: str | None = None,
+        protocol: str = "openai",
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # 后端协议：openai（/chat/completions）或 anthropic（/v1/messages）。
+        self.protocol = protocol
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
@@ -167,6 +170,8 @@ class ModelClient:
         on_text_delta: TextDeltaHandler | None,
         on_reasoning_delta: TextDeltaHandler | None = None,
     ) -> dict[str, Any]:
+        if self.protocol == "anthropic":
+            return await self._complete_stream_anthropic(messages, tools, on_text_delta)
         payload = self._payload(messages, tools, stream=True)
         # 请求在流末尾附带 usage（OpenAI 兼容），用于缓存/成本观测
         payload["stream_options"] = {"include_usage": True}
@@ -234,6 +239,8 @@ class ModelClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
+        if self.protocol == "anthropic":
+            return await self._complete_nonstream_anthropic(messages, tools)
         payload = self._payload(messages, tools, stream=False)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -255,6 +262,82 @@ class ModelClient:
             "reasoning": message.get("reasoning_content") or message.get("reasoning") or "",
             "usage": data.get("usage", {}),
         }
+
+    # ── Anthropic /v1/messages 协议 ────────────────────────────────────
+
+    def _anthropic_headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        headers.update(self.extra_headers)
+        return headers
+
+    def _anthropic_payload(self, messages: list[dict[str, Any]],
+                           tools: list[dict[str, Any]] | None,
+                           stream: bool) -> dict[str, Any]:
+        from .anthropic_protocol import to_anthropic_request
+        req = to_anthropic_request(messages, tools)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": req["messages"],
+            "max_tokens": self.max_tokens,
+            "stream": stream,
+        }
+        if req.get("system"):
+            payload["system"] = req["system"]
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if req.get("tools"):
+            payload["tools"] = req["tools"]
+        return payload
+
+    async def _complete_nonstream_anthropic(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        from .anthropic_protocol import from_anthropic_response
+        payload = self._anthropic_payload(messages, tools, stream=False)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/v1/messages",
+                headers=self._anthropic_headers(),
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+        result = from_anthropic_response(data)
+        self._record_usage(result.get("usage"))
+        return result
+
+    async def _complete_stream_anthropic(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
+        on_text_delta: TextDeltaHandler | None,
+    ) -> dict[str, Any]:
+        from .anthropic_protocol import AnthropicStreamAccumulator
+        payload = self._anthropic_payload(messages, tools, stream=True)
+        acc = AnthropicStreamAccumulator(on_text_delta=on_text_delta)
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/v1/messages",
+                headers=self._anthropic_headers(),
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    acc.feed(event)
+        result = acc.result()
+        self._record_usage(result.get("usage"))
+        return result
 
 
 def _accumulate_tool_calls(

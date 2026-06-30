@@ -45,6 +45,15 @@ class CodingAgent:
 
         # 初始化工具
         self.tool_registry = get_registry()
+        # 写后自动格式化开关
+        from .core.formatter import set_enabled as _set_fmt_enabled
+        _set_fmt_enabled(getattr(self.config, "auto_format", True))
+        # 应用工具执行超时配置（防止挂死调用冻结 agent）
+        self.tool_registry.default_tool_timeout = (
+            self.config.tool_timeout_seconds
+            if self.config.tool_timeout_seconds and self.config.tool_timeout_seconds > 0
+            else None
+        )
         register_file_tools()
         register_shell_tools()
         register_git_tools()
@@ -84,6 +93,7 @@ class CodingAgent:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             extra_headers=self.config.extra_headers,
+            protocol=getattr(self.config, "protocol", "openai"),
         )
         
         # 初始化 Agent Loop
@@ -104,6 +114,12 @@ class CodingAgent:
         # 设置权限确认回调
         self.agent_loop.set_permission_handler(self._confirm_permission)
 
+        # 外部目录守卫：默认工作区根=当前目录，根外写/执行需确认（除非配置放行）。
+        pol = self.agent_loop.permission_policy
+        if pol.workspace_root is None:
+            import os
+            pol.workspace_root = os.getcwd()
+
         # Skills：把"可用 skills 清单"作为额外 system 块按需注入（渐进式披露）。
         # 用函数延迟求值，使新增/改动 skill 后无需重启即可生效。
         from .core.skills import discover_skills, render_available_skills
@@ -113,6 +129,10 @@ class CodingAgent:
         
         # 当前状态
         self.state: AgentState | None = None
+
+        # 会话状态跟踪器（结构化进度广播，供 /status 与外部订阅者）
+        from .core.session_status import SessionStatusTracker
+        self.status_tracker = SessionStatusTracker()
 
         # 流式增量回调（可被前端覆盖）。默认 None → _call_model 用 print。
         # TUI 把它们重定向到 live 缓冲，避免 print 打断 rich.Live 重绘。
@@ -245,6 +265,10 @@ class CodingAgent:
         self.plan_tool.bind_state(self.state)
         # 用 session_id 作为 prompt 缓存键，提高稳定前缀的缓存命中率
         self.model_client.prompt_cache_key = self.state.session_id
+        # 记录模型名，供 token 估算选对 tokenizer
+        self.state.metadata["model"] = self.config.model
+        # 会话状态跟踪器绑定 session_id
+        self.status_tracker.status.session_id = self.state.session_id
 
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")
@@ -365,17 +389,109 @@ class CodingAgent:
                 return "continue"
             if act == "plan_mode":
                 pol = self.agent_loop.permission_policy
+                was_plan = pol.plan_mode
                 pol.plan_mode = not pol.plan_mode
                 print("🧭 Plan mode " + ("ON — read-only; the agent can explore and "
                       "plan but won't edit/run." if pol.plan_mode else "OFF — edits allowed again."))
+                # plan→build：关闭 plan mode 时注入一次性交接提醒
+                if was_plan and not pol.plan_mode and self.state:
+                    from .core.agent_handoff import build_switch_note
+                    had_plan = bool((self.state.metadata or {}).get("plan"))
+                    self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
+                return "continue"
+            if act.startswith("agent:"):
+                self._switch_agent(act.split(":", 1)[1])
+                return "continue"
+            if act.startswith("model:"):
+                self._switch_model(act.split(":", 1)[1])
+                return "continue"
+            if act == "status":
+                mc = self.model_client
+                self.status_tracker.set_usage(mc.total_prompt_tokens,
+                                              mc.total_completion_tokens)
+                print("📊 " + self.status_tracker.render())
                 return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
 
+    def _switch_agent(self, name: str) -> None:
+        """切换当前主会话的活动 agent profile：应用其 prompt/model/工具过滤。"""
+        from .core.agent_profiles import load_agent
+        profile = load_agent(name)
+        if profile is None:
+            print(f"Agent '{name}' not found. See /agents. "
+                  f"Define one at .coding-agent/agents/{name}.md")
+            return
+        # 应用 system prompt / 模型 / 工具过滤
+        if profile.system_prompt:
+            self.agent_loop.config.system_prompt = profile.system_prompt
+        if profile.model:
+            self.config.model = profile.model
+            self.model_client.model = profile.model
+        if profile.temperature is not None:
+            self.model_client.temperature = profile.temperature
+        if profile.allow_tools or profile.deny_tools:
+            self.agent_loop.set_tool_filter(profile.tool_allowed)
+        else:
+            self.agent_loop.set_tool_filter(None)
+        # 记录活动 agent，供切换交接提醒使用
+        prev = (self.state.metadata or {}).get("active_agent") if self.state else None
+        if self.state:
+            self.state.metadata["active_agent"] = name
+            self.state.metadata["prev_agent"] = prev
+            # plan→build：从规划态切到执行态时注入一次性交接提醒
+            from .core.agent_handoff import should_handoff, build_switch_note
+            in_plan_mode = self.agent_loop.permission_policy.plan_mode
+            if should_handoff(prev, in_plan_mode, name, in_plan_mode):
+                had_plan = bool((self.state.metadata or {}).get("plan"))
+                self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
+        print(f"🧩 Switched to agent '{name}'"
+              + (f" ({profile.model})" if profile.model else "")
+              + (f" — {profile.description}" if profile.description else ""))
+
+    def _switch_model(self, spec: str) -> None:
+        """切换模型/provider。spec='' 显示当前；'<model>' 仅换模型；
+        '<provider>:<model>' 或 '<provider>' 切到配置里的 provider。"""
+        providers = getattr(self.config, "providers", {}) or {}
+        if not spec:
+            cur = self.config.model
+            avail = ", ".join(sorted(providers)) if providers else "(none configured)"
+            print(f"Current model: {cur}\nProviders: {avail}\n"
+                  f"Usage: /model <model> | /model <provider>:<model> | /model <provider>")
+            return
+        provider_name, _, model_in_spec = spec.partition(":")
+        if provider_name in providers:
+            p = providers[provider_name]
+            base_url = p.get("base_url") or p.get("api_base_url")
+            if p.get("api_key"):
+                self.model_client.api_key = p["api_key"]
+            if base_url:
+                self.model_client.base_url = base_url
+            if p.get("extra_headers") is not None:
+                self.model_client.extra_headers = p["extra_headers"]
+            if p.get("protocol"):
+                self.model_client.protocol = p["protocol"]
+            new_model = model_in_spec or p.get("model") or self.config.model
+            self.config.model = new_model
+            self.model_client.model = new_model
+            if self.state:
+                self.state.metadata["model"] = new_model
+            print(f"🔀 Switched to provider '{provider_name}' (model {new_model})")
+            return
+        # 不是已知 provider → 当作纯模型名切换（同 provider）
+        self.config.model = spec
+        self.model_client.model = spec
+        if self.state:
+            self.state.metadata["model"] = spec
+        print(f"🔀 Model set to {spec}")
+
     
     async def _handle_event(self, event: AgentEventData) -> None:
         """处理 Agent 事件"""
+        # 推进结构化会话状态（供 /status 与订阅者）
+        self.status_tracker.update_from_event(event.event.value, event.data)
+
         if event.event == AgentEvent.THINKING:
             print(f"\n💭 Turn {event.data['turn']} - ", end="", flush=True)
         

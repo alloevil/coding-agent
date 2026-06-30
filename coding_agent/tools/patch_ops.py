@@ -195,6 +195,11 @@ def apply_patch(text: str, root: str | Path = ".") -> str:
             w = _syntax_warning(str(path), new_content or "")
             if w:
                 warnings.append(w)
+            # 写后自动格式化（非阻塞）
+            from ..core.formatter import format_file
+            fmt = format_file(str(path))
+            if fmt:
+                summary.append("  " + fmt.strip())
 
     return "Applied patch:\n" + "\n".join(summary) + "".join(warnings)
 

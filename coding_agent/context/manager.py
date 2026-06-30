@@ -100,6 +100,12 @@ class ContextManager:
         if plan_block:
             messages.append({"role": "system", "content": plan_block})
 
+        # 5. 一次性交接提醒（plan→build 切换）：注入后即消费，避免每轮重复。
+        if state.metadata:
+            note = state.metadata.pop("pending_handoff", None)
+            if note:
+                messages.append({"role": "system", "content": note})
+
         return messages
 
     def _render_plan(self, state: AgentState) -> str:

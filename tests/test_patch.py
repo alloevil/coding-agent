@@ -44,7 +44,10 @@ def test_delete_file(tmp_path):
     assert not target.exists()
 
 
-def test_multi_file_atomic(tmp_path):
+def test_multi_file_atomic(tmp_path, monkeypatch):
+    # 关闭写后自动格式化，专测 patch 机制本身（避免本机装的 ruff 规范化干扰）
+    from coding_agent.core import formatter
+    monkeypatch.setattr(formatter, "_ENABLED", False)
     (tmp_path / "x.py").write_text("a = 1\n")
     p = _patch(
         "*** Add File: new.py",

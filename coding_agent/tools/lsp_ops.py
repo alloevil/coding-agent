@@ -41,6 +41,9 @@ class LSPClient:
         self._pending: dict[int, asyncio.Future] = {}
         self._read_task: asyncio.Task | None = None
         self._initialized = False
+        # 已打开文档：uri -> (version, content)。用于决定 didOpen vs didChange，
+        # 让编辑后的内容真正同步给 server（否则诊断会过时）。
+        self._open_docs: dict[str, tuple[int, str]] = {}
 
     @property
     def name(self) -> str:
@@ -127,7 +130,12 @@ class LSPClient:
             "rootUri": root_uri,
             "capabilities": {
                 "textDocument": {
+                    "synchronization": {
+                        "dynamicRegistration": False,
+                        "didSave": False,
+                    },
                     "definition": {"dynamicRegistration": False},
+                    "implementation": {"dynamicRegistration": False},
                     "references": {"dynamicRegistration": False},
                     "hover": {
                         "dynamicRegistration": False,
@@ -135,6 +143,12 @@ class LSPClient:
                     },
                     "publishDiagnostics": {},
                     "documentSymbol": {
+                        "dynamicRegistration": False,
+                        "symbolKind": {"valueSet": list(range(1, 27))},
+                    },
+                },
+                "workspace": {
+                    "symbol": {
                         "dynamicRegistration": False,
                         "symbolKind": {"valueSet": list(range(1, 27))},
                     },
@@ -288,7 +302,12 @@ SYMBOL_KIND_NAMES: dict[int, str] = {
 # ─── 辅助函数 ────────────────────────────────────────────────────────
 
 async def _open_text_document(client: LSPClient, file_path: str) -> str:
-    """通知 LSP 打开文件，返回 file_uri"""
+    """
+    同步文件到 LSP server，返回 file_uri。
+
+    首次见到该 uri → didOpen；之后若内容变化 → didChange（version 递增）。
+    这样编辑过的文件能把最新内容同步给 server，诊断不再过时。
+    """
     abs_path = str(Path(file_path).resolve())
     file_uri = f"file://{abs_path}"
 
@@ -303,16 +322,27 @@ async def _open_text_document(client: LSPClient, file_path: str) -> str:
     }
     language_id = lang_id_map.get(ext, "")
 
-    client.send_notification("textDocument/didOpen", {
-        "textDocument": {
-            "uri": file_uri,
-            "languageId": language_id,
-            "version": 1,
-            "text": content,
-        }
-    })
-    # 给 server 一点时间处理
-    await asyncio.sleep(0.3)
+    prev = client._open_docs.get(file_uri)
+    if prev is None:
+        client.send_notification("textDocument/didOpen", {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": language_id,
+                "version": 1,
+                "text": content,
+            }
+        })
+        client._open_docs[file_uri] = (1, content)
+        await asyncio.sleep(0.3)
+    elif prev[1] != content:
+        # 内容变了 → 发 didChange（全量同步），version 递增
+        version = prev[0] + 1
+        client.send_notification("textDocument/didChange", {
+            "textDocument": {"uri": file_uri, "version": version},
+            "contentChanges": [{"text": content}],
+        })
+        client._open_docs[file_uri] = (version, content)
+        await asyncio.sleep(0.3)
     return file_uri
 
 
@@ -758,6 +788,116 @@ class LSPSymbolsTool(Tool):
 
 # ─── Registration ────────────────────────────────────────────────────
 
+class LSPImplementationTool(Tool):
+    """跳转到接口/抽象方法的实现"""
+
+    @property
+    def name(self) -> str:
+        return "lsp_implementation"
+
+    @property
+    def description(self) -> str:
+        return ("Find implementations of the symbol at the given position "
+                "(e.g. implementations of an interface or abstract method). "
+                "Returns file:line:col locations.")
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path containing the symbol"},
+                "line": {"type": "integer", "description": "Line number (1-indexed)"},
+                "column": {"type": "integer", "description": "Column number (0-indexed)"},
+            },
+            "required": ["path", "line", "column"],
+        }
+
+    @property
+    def permission(self) -> ToolPermission:
+        return ToolPermission.READ
+
+    async def execute(self, **kwargs: Any) -> str:
+        path = kwargs.get("path")
+        line = kwargs.get("line")
+        column = kwargs.get("column")
+        if not path:
+            raise ToolExecutionError(self.name, "path is required")
+        if line is None or column is None:
+            raise ToolExecutionError(self.name, "line and column are required")
+        try:
+            lang = detect_language(path)
+            if not lang:
+                return f"Error: Unsupported file type for '{path}'"
+            manager = get_server_manager()
+            client = await manager.get_client(lang)
+            file_uri = await _open_text_document(client, path)
+            result = await client.send_request("textDocument/implementation", {
+                "textDocument": {"uri": file_uri},
+                "position": {"line": line - 1, "character": column},
+            })
+            if not result:
+                return "No implementations found"
+            locations = result if isinstance(result, list) else [result]
+            return "\n".join(_format_location(loc) for loc in locations)
+        except LSPError as e:
+            return f"Error: {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"Error running lsp_implementation: {e}"
+
+
+class LSPWorkspaceSymbolsTool(Tool):
+    """按名在整个工作区搜索符号"""
+
+    @property
+    def name(self) -> str:
+        return "lsp_workspace_symbols"
+
+    @property
+    def description(self) -> str:
+        return ("Search for symbols (functions, classes, variables) by name across "
+                "the whole workspace. Returns matching symbols with their locations.")
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Symbol name or substring to search for"},
+                "language": {"type": "string",
+                             "description": "Optional language hint (python/typescript/...) "
+                                            "to pick the language server"},
+            },
+            "required": ["query"],
+        }
+
+    @property
+    def permission(self) -> ToolPermission:
+        return ToolPermission.READ
+
+    async def execute(self, **kwargs: Any) -> str:
+        query = kwargs.get("query")
+        if not query:
+            raise ToolExecutionError(self.name, "query is required")
+        lang = kwargs.get("language") or "python"
+        try:
+            manager = get_server_manager()
+            client = await manager.get_client(lang)
+            result = await client.send_request("workspace/symbol", {"query": query})
+            if not result:
+                return f"No symbols matching '{query}'"
+            lines = []
+            for sym in result[:50]:
+                name = sym.get("name", "?")
+                loc = sym.get("location", {})
+                lines.append(f"{name}  —  {_format_location(loc)}")
+            return "\n".join(lines)
+        except LSPError as e:
+            return f"Error: {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"Error running lsp_workspace_symbols: {e}"
+
+
 def register_lsp_tools(registry: Any = None) -> None:
     """注册所有 LSP 工具"""
     from .registry import get_registry
@@ -768,3 +908,5 @@ def register_lsp_tools(registry: Any = None) -> None:
     reg.register(LSPHoverTool())
     reg.register(LSPDiagnosticsTool())
     reg.register(LSPSymbolsTool())
+    reg.register(LSPImplementationTool())
+    reg.register(LSPWorkspaceSymbolsTool())

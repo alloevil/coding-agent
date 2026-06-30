@@ -1,19 +1,16 @@
 """
-MCP 客户端 - 通过 stdio 连接 MCP server，把其 tools 暴露为本地 Tool
+MCP 客户端 - 连接 MCP server，把其 tools 暴露为本地 Tool
 
-参考 Model Context Protocol：与 server 通过 stdin/stdout 上的
-JSON-RPC 2.0 通信。这里实现一个最小可用子集：
-  - initialize 握手
-  - tools/list 列出工具
-  - tools/call 调用工具
+参考 Model Context Protocol：与 server 通过 JSON-RPC 2.0 通信。支持两种 transport：
+  - stdio：拉起子进程，通过 stdin/stdout 收发（本地 server）
+  - http：通过 httpx 向 URL POST 请求（streamable-HTTP / SSE 远程 server）
 
-无新依赖（仅 asyncio.subprocess + json）。每个远程工具被包装成
-MCPTool 注册进 registry，agent 即可像本地工具一样调用。
+实现最小可用子集：initialize 握手 / tools/list / tools/call。
 
 设计：
-  - 懒启动：首次需要时再拉起 server 进程
+  - 懒启动：首次需要时再连接
   - 失败降级：server 不可用时不影响其余工具
-  - 权限：默认 EXECUTE（外部进程），可按需在策略层细化
+  - 权限：默认 EXECUTE（外部能力），可按需在策略层细化
 """
 from __future__ import annotations
 
@@ -28,20 +25,16 @@ class MCPError(Exception):
     pass
 
 
-class MCPClient:
-    """单个 MCP server 的 stdio JSON-RPC 客户端。"""
+class _StdioTransport:
+    """通过子进程 stdin/stdout 收发 JSON-RPC（本地 MCP server）。"""
 
-    def __init__(self, name: str, command: list[str], env: dict[str, str] | None = None,
-                 cwd: str | None = None, timeout: float = 30.0):
-        self.name = name
+    def __init__(self, command: list[str], env: dict[str, str] | None,
+                 cwd: str | None, timeout: float):
         self.command = command
         self.env = env
         self.cwd = cwd
         self.timeout = timeout
         self._proc: asyncio.subprocess.Process | None = None
-        self._req_id = 0
-        self._lock = asyncio.Lock()
-        self._initialized = False
 
     async def start(self) -> None:
         if self._proc is not None:
@@ -56,32 +49,19 @@ class MCPClient:
             env=full_env,
             cwd=self.cwd,
         )
-        await self._initialize()
 
-    async def _send(self, method: str, params: dict[str, Any] | None = None,
-                    is_notification: bool = False) -> dict[str, Any] | None:
+    async def request(self, msg: dict[str, Any], is_notification: bool) -> dict[str, Any] | None:
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
-            raise MCPError(f"MCP server '{self.name}' not started")
-
-        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-        if params is not None:
-            msg["params"] = params
-        if not is_notification:
-            self._req_id += 1
-            msg["id"] = self._req_id
-
+            raise MCPError("stdio MCP server not started")
         data = (json.dumps(msg) + "\n").encode()
         self._proc.stdin.write(data)
         await self._proc.stdin.drain()
-
         if is_notification:
             return None
-
-        # 读取直到拿到匹配 id 的响应（跳过通知/无关消息）
         while True:
             line = await asyncio.wait_for(self._proc.stdout.readline(), timeout=self.timeout)
             if not line:
-                raise MCPError(f"MCP server '{self.name}' closed the connection")
+                raise MCPError("stdio MCP server closed the connection")
             line = line.strip()
             if not line:
                 continue
@@ -91,9 +71,132 @@ class MCPClient:
                 continue
             if resp.get("id") == msg.get("id"):
                 if "error" in resp:
-                    raise MCPError(f"{self.name}: {resp['error']}")
+                    raise MCPError(str(resp["error"]))
                 return resp.get("result", {})
             # 其它（通知等）忽略
+
+    async def close(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                await asyncio.wait_for(self._proc.wait(), timeout=5)
+            except (ProcessLookupError, asyncio.TimeoutError):
+                try:
+                    self._proc.kill()
+                except ProcessLookupError:
+                    pass
+            self._proc = None
+
+
+class _HttpTransport:
+    """通过 httpx 向 URL POST JSON-RPC（streamable-HTTP / SSE 远程 server）。
+
+    每个请求 POST 一次；响应可能是 application/json（单条）或
+    text/event-stream（SSE，逐 data: 事件读取，取匹配 id 的那条）。
+    """
+
+    def __init__(self, url: str, headers: dict[str, str] | None, timeout: float):
+        self.url = url
+        self.headers = {"Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        **(headers or {})}
+        self.timeout = timeout
+        self._client: Any = None
+
+    async def start(self) -> None:
+        if self._client is not None:
+            return
+        import httpx
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+
+    async def request(self, msg: dict[str, Any], is_notification: bool) -> dict[str, Any] | None:
+        if self._client is None:
+            raise MCPError("http MCP transport not started")
+        resp = await self._client.post(self.url, headers=self.headers,
+                                       content=json.dumps(msg))
+        resp.raise_for_status()
+        if is_notification:
+            return None
+        ctype = resp.headers.get("content-type", "")
+        if "text/event-stream" in ctype:
+            return self._parse_sse(resp.text, msg.get("id"))
+        data = resp.json()
+        if "error" in data:
+            raise MCPError(str(data["error"]))
+        return data.get("result", {})
+
+    @staticmethod
+    def _parse_sse(text: str, want_id: Any) -> dict[str, Any]:
+        """从 SSE 文本里取出匹配 id 的 JSON-RPC 响应。"""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[len("data:"):].strip()
+            if not payload:
+                continue
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("id") == want_id:
+                if "error" in obj:
+                    raise MCPError(str(obj["error"]))
+                return obj.get("result", {})
+        raise MCPError("no matching response in SSE stream")
+
+    async def close(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
+
+
+class MCPClient:
+    """单个 MCP server 的 JSON-RPC 客户端（stdio 或 http transport）。"""
+
+    def __init__(self, name: str, command: list[str] | None = None,
+                 env: dict[str, str] | None = None, cwd: str | None = None,
+                 timeout: float = 30.0, url: str | None = None,
+                 transport: str | None = None, headers: dict[str, str] | None = None):
+        self.name = name
+        self.timeout = timeout
+        self._req_id = 0
+        self._lock = asyncio.Lock()
+        self._initialized = False
+        # 选择 transport：显式 transport 优先；否则 url→http，command→stdio。
+        kind = transport or ("http" if url else "stdio")
+        if kind in ("http", "sse"):
+            if not url:
+                raise MCPError(f"MCP server '{name}': http transport needs a url")
+            self._transport: Any = _HttpTransport(url, headers, timeout)
+        else:
+            if not command:
+                raise MCPError(f"MCP server '{name}': stdio transport needs a command")
+            self._transport = _StdioTransport(command, env, cwd, timeout)
+
+    async def start(self) -> None:
+        if self._initialized:
+            return
+        await self._transport.start()
+        await self._initialize()
+
+    async def _send(self, method: str, params: dict[str, Any] | None = None,
+                    is_notification: bool = False) -> dict[str, Any] | None:
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        if not is_notification:
+            self._req_id += 1
+            msg["id"] = self._req_id
+        try:
+            return await self._transport.request(msg, is_notification)
+        except MCPError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise MCPError(f"{self.name}: {e}") from e
 
     async def _initialize(self) -> None:
         await self._send("initialize", {
@@ -101,7 +204,6 @@ class MCPClient:
             "capabilities": {},
             "clientInfo": {"name": "coding-agent", "version": "0.2"},
         })
-        # 通知 server 初始化完成
         await self._send("notifications/initialized", {}, is_notification=True)
         self._initialized = True
 
@@ -121,17 +223,8 @@ class MCPClient:
         return _render_tool_result(result or {})
 
     async def close(self) -> None:
-        if self._proc is not None:
-            try:
-                self._proc.terminate()
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except (ProcessLookupError, asyncio.TimeoutError):
-                try:
-                    self._proc.kill()
-                except ProcessLookupError:
-                    pass
-            self._proc = None
-            self._initialized = False
+        await self._transport.close()
+        self._initialized = False
 
 
 def _render_tool_result(result: dict[str, Any]) -> str:
@@ -185,10 +278,11 @@ class MCPTool(Tool):
 
 async def register_mcp_servers(servers: dict[str, Any], registry: Any) -> list[MCPClient]:
     """
-    连接配置里的 MCP servers，注册它们的工具。
+    连接配置里的 MCP servers，注册它们的工具。支持 stdio 与 http/sse transport：
 
-    servers 形如：
-      {"fs": {"command": ["npx","-y","@modelcontextprotocol/server-filesystem","/path"]}}
+      stdio: {"fs": {"command": ["npx","-y","@mcp/server-fs","/path"]}}
+      http:  {"gh": {"url": "https://mcp.example.com/", "headers": {"Authorization": "Bearer ..."}}}
+             或显式 {"x": {"transport": "sse", "url": "..."}}
 
     返回已连接的 client 列表（供后续 close）。单个 server 失败不影响其余。
     """
@@ -197,15 +291,23 @@ async def register_mcp_servers(servers: dict[str, Any], registry: Any) -> list[M
         command = cfg.get("command")
         if isinstance(command, str):
             command = command.split()
-        if not command:
+        url = cfg.get("url")
+        transport = cfg.get("transport")
+        if not command and not url:
             continue
-        client = MCPClient(name=name, command=command,
-                           env=cfg.get("env"), cwd=cfg.get("cwd"))
         try:
+            client = MCPClient(
+                name=name, command=command, env=cfg.get("env"),
+                cwd=cfg.get("cwd"), url=url, transport=transport,
+                headers=cfg.get("headers"),
+            )
             tools = await client.list_tools()
         except Exception:
             # server 不可用：跳过，不影响其它工具
-            await client.close()
+            try:
+                await client.close()  # type: ignore[has-type]
+            except Exception:
+                pass
             continue
         for spec in tools:
             registry.register(MCPTool(client, spec))

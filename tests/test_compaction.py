@@ -32,9 +32,13 @@ def _mk_state(messages):
 
 
 def test_token_estimate_counts_tool_results():
-    state = _mk_state([_tool("c1", "X" * 4000)])
-    # 仅工具结果就应贡献约 1000 token
-    assert state.get_token_estimate() >= 900
+    # 用多样化的真实文本，避免重复字符在真 tokenizer 下被极端压缩
+    # （"XXXX..." 在 BPE 下会被合并成极少 token，是测试假象而非真实负载）。
+    blob = ("def process(item):\n    return item.value * 2  # line\n") * 100
+    state = _mk_state([_tool("c1", blob)])
+    empty = _mk_state([]).get_token_estimate()
+    # 工具结果应显著贡献 token（对真 tokenizer 与字符兜底都成立）
+    assert state.get_token_estimate() > empty + 200
 
 
 def test_snip_truncates_long_tool_results_head_and_tail():

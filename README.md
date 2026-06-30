@@ -46,14 +46,21 @@ A lightweight, modular AI coding agent framework inspired by [Claude Code](https
 
 ### Installation
 
+One-liner (creates an isolated `.venv` and installs everything):
+
+```bash
+git clone https://github.com/alloevil/coding-agent.git
+cd coding-agent
+./install.sh                 # core + dev deps
+# ./install.sh --all         # also tiktoken (token counting) + playwright (browser tools)
+```
+
+Or, equivalently, with `make`:
+
 Install into a dedicated virtualenv so the project's pinned deps (httpx, rich)
 don't clash with other tools in a shared/global environment:
 
 ```bash
-# Clone the repository
-git clone https://github.com/alloevil/coding-agent.git
-cd coding-agent
-
 # Create an isolated venv and install (with dev deps). Equivalent to:
 #   python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 make venv
@@ -62,6 +69,16 @@ make venv
 make test
 make run
 make bench
+```
+
+After installing, set your model credentials and run:
+
+```bash
+export MODEL_API_KEY=sk-...
+export MODEL_BASE_URL=https://api.openai.com/v1   # or your gateway
+export MODEL_PRIMARY=gpt-4o
+.venv/bin/coding-agent          # plain CLI
+.venv/bin/coding-agent --tui    # rich TUI
 ```
 
 > Avoid `pip install -e .` into a shared conda/global environment — it will

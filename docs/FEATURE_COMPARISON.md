@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (502 tests passing). Compares our `coding-agent` against:
+Status snapshot (612 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -13,7 +13,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 |---|---|---|---|
 | Read file (paginated) | ✅ `file_read` (2k pages, binary/size guard) | ✅ Read | ✅ read |
 | Write file | ✅ `file_write` (+syntax warn) | ✅ Write | ✅ write |
-| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies) | ✅ Edit | ✅ edit (9 strategies) |
+| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies, returns diff, auto-format) | ✅ Edit | ✅ edit (9 strategies) |
 | Multi-file atomic patch | ✅ `apply_patch` | 🟡 (MultiEdit) | ✅ apply-patch |
 | Glob / file search | ✅ `file_search` (gitignore-aware) | ✅ Glob | ✅ glob |
 | Grep | ✅ `grep` (gitignore-aware) | ✅ Grep | ✅ grep |
@@ -25,8 +25,13 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Ask-user / question | ✅ `ask_user` | ✅ (AskUserQuestion) | ✅ question |
 | Memory | ✅ `memory_*` (SQLite/project) | ✅ (CLAUDE.md + memory) | 🟡 |
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
-| LSP (real language servers) | ✅ `lsp_*` (lazy-start on first use) | ✅ (diagnostics) | ✅ full LSP client |
+| LSP (real language servers) | ✅ `lsp_*` (lazy-start; didChange refresh; impl + workspace-symbol) | ✅ (diagnostics) | ✅ full LSP client |
 | Skills | ✅ `skill` (SKILL.md, progressive disclosure, ~/.claude/skills interop) | ✅ Skills | ✅ skill tool |
+| Named custom agents | ✅ (`.coding-agent/agents/*.md`: prompt+model+tools+mode; `/agent` `/agents`) | ✅ subagents | ✅ agent/mode |
+| Per-agent tool restriction | ✅ (profile allow/deny; hidden from model + denied at dispatch) | ✅ | ✅ |
+| Plan→build handoff | ✅ (one-shot synthetic note on switch) | ✅ | ✅ (reminders) |
+| External-dir write guard | ✅ (writes outside workspace root ASK) | 🟡 | ✅ (assertExternalDirectory) |
+| Truncated output spill-to-disk | ✅ (full output to temp file + path hint) | 🟡 | ✅ (truncation-dir) |
 | Browser control | ✅ `browser_*` (playwright) | 🟡 | ❌ |
 
 ## Core / loop
@@ -44,9 +49,11 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Interrupt | ✅ | ✅ (Esc) | ✅ |
 | Rollback / revert edits | ✅ `rollback_last` | 🟡 | ✅ session revert |
 | Permissions (allow/deny/ask) | ✅ rule engine | ✅ (settings perms) | ✅ per-tool permission |
-| Multi-provider | 🟡 (OpenAI-compat; Anthropic blocked here) | ✅ (Anthropic) | ✅ (many providers) |
+| Multi-provider | ✅ (`providers` config + `/model` switch; OpenAI **and** Anthropic protocol) | ✅ (Anthropic) | ✅ (many providers) |
+| Backend protocol | ✅ OpenAI `/chat/completions` + Anthropic `/v1/messages` | ✅ (Anthropic) | ✅ (ai-sdk) |
+| Session status stream | ✅ (SessionStatusTracker + subscribe + `/status`) | 🟡 | ✅ (status.ts) |
 | Session persistence | ✅ SQLite | ✅ | ✅ |
-| MCP | ✅ stdio client | ✅ (stdio+SSE) | ✅ (stdio+SSE+oauth) |
+| MCP | ✅ stdio + HTTP/SSE remote | ✅ (stdio+SSE) | ✅ (stdio+SSE+oauth) |
 
 ## Surface / UX
 
@@ -69,8 +76,16 @@ check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested 
 `git_branch` ✅, production system prompt ✅, **Skills ✅** (progressive disclosure).
 
 **Remaining (offline-verifiable):**
-- (none high-value left — Skills, session titles, plan mode, git_branch all
-  shipped; offline backlog vs Claude Code/opencode essentially exhausted.)
+- (none high-value left — Skills, session titles, plan mode, git_branch, TUI,
+  edit-diff, real tokenizer, per-tool timeout all shipped.)
+
+**Depth/quality follow-ups (lower value, deferred):**
+- `.gitignore` not truly parsed — only a fixed `DEFAULT_IGNORE_DIRS` set; the
+  Python search fallback ignores a project's custom `.gitignore` (ripgrep path
+  does honor it). Could add `pathspec` or a simple `.gitignore` line matcher.
+- Post-write syntax check is Python-only (`ast.parse`); JSON/YAML are zero-dep
+  additions.
+- `MAX_SPAWN_DEPTH=1` is hardcoded; could be config-driven.
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
