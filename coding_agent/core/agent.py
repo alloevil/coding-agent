@@ -317,84 +317,134 @@ class AgentLoop:
                 break
             
             # 8. Tool dispatch + execution
-            for tool_call in tool_calls:
-                yield AgentEventData(
-                    event=AgentEvent.TOOL_CALL,
-                    data={
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "arguments": tool_call.arguments
-                    }
-                )
-                
-                # 9. Permission gate
-                tool = self.tool_registry.get_tool(tool_call.name)
-                if not tool:
-                    result = f"Error: Tool '{tool_call.name}' not found"
-                    is_error = True
-                elif self._needs_permission(tool.permission):
-                    # 请求权限确认
-                    yield AgentEventData(
-                        event=AgentEvent.PERMISSION_REQUEST,
-                        data={
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": tool_call.arguments,
-                            "permission": tool.permission.value
-                        }
-                    )
-                    
-                    # 调用权限确认回调
-                    if self._permission_handler:
-                        try:
-                            approved = await self._permission_handler(
-                                tool_call.name,
-                                tool_call.arguments
-                            )
-                        except Exception as e:
-                            approved = False
-                            yield AgentEventData(
-                                event=AgentEvent.ERROR,
-                                data={"error": f"Permission handler error: {e}"}
-                            )
-                    else:
-                        # 没有权限处理器，默认拒绝
-                        approved = False
-                    
-                    if approved:
-                        result, is_error = "", False
-                        async for item in self._recovery_events(tool_call, state):
-                            if isinstance(item, tuple):
-                                result, is_error = item
-                            else:
-                                yield item
-                    else:
-                        result = f"Permission denied for tool '{tool_call.name}'"
-                        is_error = True
-                else:
-                    # 自动允许（READ 权限）
-                    result, is_error = "", False
-                    async for item in self._recovery_events(tool_call, state):
-                        if isinstance(item, tuple):
-                            result, is_error = item
-                        else:
-                            yield item
-                
-                # 添加工具结果
-                state.add_tool_result(tool_call.id, result, is_error)
-                
-                yield AgentEventData(
-                    event=AgentEvent.TOOL_RESULT,
-                    data={
-                        "id": tool_call.id,
-                        "result": result,
-                        "is_error": is_error
-                    }
-                )
-        
+            #    连续的只读(自动放行)工具并发执行；其余串行、保持顺序。
+            i = 0
+            while i < len(tool_calls):
+                # 收集一段连续的可并行(只读)调用
+                group: list[ToolCall] = []
+                while i < len(tool_calls) and self._is_parallelizable(tool_calls[i]):
+                    group.append(tool_calls[i])
+                    i += 1
+                if len(group) >= 2:
+                    async for ev in self._dispatch_parallel(group, state):
+                        yield ev
+                    continue
+                if group:
+                    # 只有一个可并行调用，按串行处理即可
+                    async for ev in self._dispatch_one(group[0], state):
+                        yield ev
+                    continue
+                # 非并行调用(需权限/写/执行/未知)，串行处理
+                async for ev in self._dispatch_one(tool_calls[i], state):
+                    yield ev
+                i += 1
+
         # 保存会话
         if state.session_id:
             self.session_store.save_state(state.session_id, state)
+
+    def _is_parallelizable(self, tool_call: ToolCall) -> bool:
+        """工具是否可并发执行：存在、READ 权限、且当前配置下自动放行。"""
+        tool = self.tool_registry.get_tool(tool_call.name)
+        if tool is None:
+            return False
+        if tool.permission != ToolPermission.READ:
+            return False
+        return not self._needs_permission(tool.permission)
+
+    async def _dispatch_one(
+        self, tool_call: ToolCall, state: AgentState
+    ) -> AsyncGenerator[AgentEventData, None]:
+        """串行处理单个工具调用：事件 -> 权限门 -> 执行 -> 结果。"""
+        yield AgentEventData(
+            event=AgentEvent.TOOL_CALL,
+            data={
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+            },
+        )
+
+        # 9. Permission gate
+        tool = self.tool_registry.get_tool(tool_call.name)
+        if not tool:
+            result = f"Error: Tool '{tool_call.name}' not found"
+            is_error = True
+        elif self._needs_permission(tool.permission):
+            yield AgentEventData(
+                event=AgentEvent.PERMISSION_REQUEST,
+                data={
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                    "permission": tool.permission.value,
+                },
+            )
+            if self._permission_handler:
+                try:
+                    approved = await self._permission_handler(
+                        tool_call.name, tool_call.arguments
+                    )
+                except Exception as e:
+                    approved = False
+                    yield AgentEventData(
+                        event=AgentEvent.ERROR,
+                        data={"error": f"Permission handler error: {e}"},
+                    )
+            else:
+                approved = False
+
+            if approved:
+                result, is_error = "", False
+                async for item in self._recovery_events(tool_call, state):
+                    if isinstance(item, tuple):
+                        result, is_error = item
+                    else:
+                        yield item
+            else:
+                result = f"Permission denied for tool '{tool_call.name}'"
+                is_error = True
+        else:
+            # 自动允许（READ 权限）
+            result, is_error = "", False
+            async for item in self._recovery_events(tool_call, state):
+                if isinstance(item, tuple):
+                    result, is_error = item
+                else:
+                    yield item
+
+        state.add_tool_result(tool_call.id, result, is_error)
+        yield AgentEventData(
+            event=AgentEvent.TOOL_RESULT,
+            data={"id": tool_call.id, "result": result, "is_error": is_error},
+        )
+
+    async def _dispatch_parallel(
+        self, group: list[ToolCall], state: AgentState
+    ) -> AsyncGenerator[AgentEventData, None]:
+        """并发执行一组只读工具：先发全部 TOOL_CALL，并发执行，再按序发结果。"""
+        for tc in group:
+            yield AgentEventData(
+                event=AgentEvent.TOOL_CALL,
+                data={"id": tc.id, "name": tc.name, "arguments": tc.arguments},
+            )
+
+        # 并发执行（只读工具无副作用、不需回滚；不透传重试事件以避免交错）
+        results = await asyncio.gather(
+            *(self._execute_with_recovery(tc, state) for tc in group),
+            return_exceptions=True,
+        )
+
+        for tc, res in zip(group, results):
+            if isinstance(res, Exception):
+                result, is_error = f"Error executing tool '{tc.name}': {res}", True
+            else:
+                result, is_error = res
+            state.add_tool_result(tc.id, result, is_error)
+            yield AgentEventData(
+                event=AgentEvent.TOOL_RESULT,
+                data={"id": tc.id, "result": result, "is_error": is_error},
+            )
     
     async def _call_model(self, context: list[dict[str, Any]]) -> dict[str, Any]:
         """调用模型"""
