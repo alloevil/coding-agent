@@ -393,8 +393,10 @@ def _parse_args(argv: list[str]) -> dict[str, Any]:
                    help="Resume a session by id; with no id, pick from recent sessions")
     p.add_argument("--list-sessions", action="store_true",
                    help="List recent sessions and exit")
+    p.add_argument("--tui", action="store_true",
+                   help="Use the rich TUI front-end")
     args = p.parse_args(argv)
-    return {"resume": args.resume, "list_sessions": args.list_sessions}
+    return {"resume": args.resume, "list_sessions": args.list_sessions, "tui": args.tui}
 
 
 async def main(argv: list[str] | None = None) -> None:
@@ -443,6 +445,12 @@ async def main(argv: list[str] | None = None) -> None:
             resume_id = (sessions[int(pick) - 1]["id"]
                          if pick.isdigit() and 1 <= int(pick) <= len(sessions[:10])
                          else None)
+
+    # --tui: 用 rich TUI 前端
+    if opts.get("tui"):
+        from .ui.app import TuiApp
+        await TuiApp(agent).run(session_id=resume_id)
+        return
 
     await agent.start(session_id=resume_id)
 
