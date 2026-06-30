@@ -247,6 +247,83 @@ class GitLogTool(Tool):
             return f"Error getting git log: {str(e)}"
 
 
+class GitBranchTool(Tool):
+    """查看 / 创建 / 切换 git 分支"""
+
+    @property
+    def name(self) -> str:
+        return "git_branch"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Show, create, or switch git branches. With no arguments, lists local "
+            "branches and marks the current one. Pass 'create' to make a new branch "
+            "(and switch to it), or 'switch' to checkout an existing branch."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "create": {
+                    "type": "string",
+                    "description": "Name of a new branch to create and switch to.",
+                },
+                "switch": {
+                    "type": "string",
+                    "description": "Name of an existing branch to checkout.",
+                },
+            },
+            "required": [],
+        }
+
+    @property
+    def permission(self) -> ToolPermission:
+        # 列出分支是只读的；创建/切换会改变工作区 → WRITE。
+        # 这里取较高级别，确保创建/切换会走权限确认。
+        return ToolPermission.WRITE
+
+    async def execute(self, **kwargs: Any) -> str:
+        import asyncio
+
+        create = kwargs.get("create")
+        switch = kwargs.get("switch")
+
+        async def _run(*cmd: str) -> tuple[int, str, str]:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+            return (
+                proc.returncode or 0,
+                out.decode("utf-8", errors="replace"),
+                err.decode("utf-8", errors="replace"),
+            )
+
+        try:
+            if create:
+                code, out, err = await _run("git", "checkout", "-b", create)
+                if code != 0:
+                    return f"Error creating branch: {err.strip() or out.strip()}"
+                return f"Created and switched to branch '{create}'."
+            if switch:
+                code, out, err = await _run("git", "checkout", switch)
+                if code != 0:
+                    return f"Error switching branch: {err.strip() or out.strip()}"
+                return f"Switched to branch '{switch}'."
+            # 默认：列出本地分支
+            code, out, err = await _run("git", "branch")
+            if code != 0:
+                return f"Error: {err.strip() or out.strip()}"
+            return out.strip() or "(no branches yet)"
+        except Exception as e:  # noqa: BLE001
+            return f"Error running git branch: {e}"
+
+
 def register_git_tools(registry: Any = None) -> None:
     """注册所有 git 工具"""
     from .registry import get_registry
@@ -256,3 +333,4 @@ def register_git_tools(registry: Any = None) -> None:
     reg.register(GitDiffTool())
     reg.register(GitCommitTool())
     reg.register(GitLogTool())
+    reg.register(GitBranchTool())
