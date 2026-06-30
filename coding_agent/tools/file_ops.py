@@ -192,6 +192,11 @@ class FileReadTool(Tool):
                     + (f", limit={page}." if limit else ".")
                 )
             _record_read(path)
+            try:
+                from ..context.project_context import note_touched_path
+                note_touched_path(path)
+            except Exception:
+                pass
             return body
         except Exception as e:
             return f"Error reading file: {str(e)}"
