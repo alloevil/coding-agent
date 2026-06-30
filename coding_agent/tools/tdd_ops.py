@@ -309,7 +309,17 @@ class TddRunTestsTool(Tool):
 # ---------------------------------------------------------------------------
 
 class TddFixLoopTool(Tool):
-    """自动修复失败测试（高级工具，会修改代码）"""
+    """自动修复失败测试的真实闭环（会修改代码）。
+
+    流程：跑测试 → 失败则把失败输出 + 相关源码喂给模型 → 模型返回修正后的
+    完整文件 → 写盘 → 重跑，直到通过或达到 max_iterations。
+
+    需要 parent_agent 提供模型调用（与子代理同款 _model_call_fn）。没有模型时
+    退化为只跑一次测试并把失败详情返回给主循环（让主循环里的模型自己修）。
+    """
+
+    def __init__(self, parent_agent: Any = None) -> None:
+        self._parent_agent = parent_agent
 
     @property
     def name(self) -> str:
@@ -318,8 +328,9 @@ class TddFixLoopTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Auto-fix failing tests in a loop: run tests → analyze failures → "
-            "modify code → re-test → repeat until pass or limit reached.\n"
+            "Auto-fix failing tests in a loop: run tests → send failures + source "
+            "to the model → apply the model's corrected files → re-test → repeat "
+            "until pass or limit reached.\n"
             "This tool MODIFIES source code. Use with caution."
         )
 
@@ -360,115 +371,138 @@ class TddFixLoopTool(Tool):
         test_path = kwargs.get("test_path")
         workdir = kwargs.get("workdir")
         framework = kwargs.get("framework", "auto")
+        # 可选：限定模型只允许修改这些源文件（避免它去改测试）
+        source_files = kwargs.get("source_files") or []
 
         cwd = Path(workdir) if workdir else Path.cwd()
 
         if framework == "auto":
             framework = FrameworkDetector.detect_framework(cwd)
 
+        model_fn = getattr(self._parent_agent, "_model_call_fn", None)
+
         log: list[dict[str, Any]] = []
+        result = await TestRunner.run_tests(
+            framework=framework, path=test_path, workdir=str(cwd))
 
         for iteration in range(1, max_iterations + 1):
-            # 1. 运行测试
-            result = await TestRunner.run_tests(
-                framework=framework,
-                path=test_path,
-                workdir=str(cwd),
-            )
-
+            if result.failed == 0:
+                break
             entry: dict[str, Any] = {
                 "iteration": iteration,
-                "passed": result.passed,
                 "failed": result.failed,
-                "errors_fixed": [],
+                "action": "none",
             }
-
-            if result.failed == 0:
-                entry["status"] = "all_passed"
+            if model_fn is None:
+                # 无模型：把失败详情交回主循环（由主循环里的模型修）
+                entry["action"] = "no_model_returned_failures"
                 log.append(entry)
                 break
 
-            # 2. 对每个失败尝试修复
-            for error in result.errors:
-                fix_result = await self._attempt_fix(cwd, error, framework)
-                entry["errors_fixed"].append(fix_result)
-
-            entry["status"] = "attempted"
+            edited = await self._model_fix(cwd, result, source_files, model_fn)
+            entry["action"] = "edited" if edited else "no_edit"
+            entry["files_changed"] = edited
             log.append(entry)
+            if not edited:
+                break  # 模型没给出可应用的修改，停止避免空转
 
-        # 最终运行一次
-        final = await TestRunner.run_tests(
-            framework=framework,
-            path=test_path,
-            workdir=str(cwd),
-        )
+            # 重跑
+            result = await TestRunner.run_tests(
+                framework=framework, path=test_path, workdir=str(cwd))
 
         summary = {
             "total_iterations": len(log),
-            "final_passed": final.passed,
-            "final_failed": final.failed,
+            "final_passed": result.passed,
+            "final_failed": result.failed,
+            "fixed": result.failed == 0,
             "iterations": log,
-            "raw_output": final.raw_output[:2000],
+            "raw_output": result.raw_output[:2000],
         }
-
         return json.dumps(summary, indent=2, ensure_ascii=False)
 
-    async def _attempt_fix(
-        self, cwd: Path, error: dict[str, Any], framework: str
-    ) -> dict[str, Any]:
-        """尝试修复单个测试错误"""
-        file_path = error.get("file", "")
-        line = error.get("line", 0)
-        message = error.get("message", "")
+    # 模型返回修正文件的标记格式（便于稳健解析）
+    _FILE_RE = re.compile(
+        r"<<<FILE:\s*(?P<path>[^\n>]+?)\s*>>>\n(?P<body>.*?)\n<<<END>>>",
+        re.DOTALL,
+    )
 
-        fix_info: dict[str, Any] = {
-            "file": file_path,
-            "line": line,
-            "message": message,
-            "action": "none",
-        }
+    async def _model_fix(self, cwd: Path, result: "TestResult",
+                         source_files: list[str], model_fn: Any) -> list[str]:
+        """把失败 + 源码喂给模型，应用其返回的修正文件，返回改动的文件名列表。"""
+        # 收集候选源文件：优先调用方指定，否则用 cwd 下的非测试源文件
+        candidates = self._collect_sources(cwd, source_files)
+        if not candidates:
+            return []
 
-        if not file_path:
-            fix_info["action"] = "skipped_no_file"
-            return fix_info
-
-        full_path = cwd / file_path
-        if not full_path.exists():
-            fix_info["action"] = "skipped_file_not_found"
-            return fix_info
-
+        src_blocks = []
+        for rel, text in candidates.items():
+            src_blocks.append(f"<<<FILE: {rel}>>>\n{text}\n<<<END>>>")
+        prompt = (
+            "Some tests are failing. Fix the SOURCE code so all tests pass. "
+            "Do NOT modify the tests. Return ONLY the full corrected contents of "
+            "each file you change, each wrapped exactly as:\n"
+            "<<<FILE: relative/path.py>>>\n<full file content>\n<<<END>>>\n"
+            "Return nothing else. If a file needs no change, omit it.\n\n"
+            f"## Test failures\n```\n{result.raw_output[:4000]}\n```\n\n"
+            f"## Current source files\n" + "\n\n".join(src_blocks)
+        )
         try:
-            content = full_path.read_text(encoding="utf-8")
-            lines = content.splitlines(keepends=True)
+            resp = await model_fn([{"role": "user", "content": prompt}], [])
+        except Exception:  # noqa: BLE001
+            return []
+        text = (resp or {}).get("content", "") if isinstance(resp, dict) else str(resp)
+        changed: list[str] = []
+        for m in self._FILE_RE.finditer(text or ""):
+            rel = m.group("path").strip()
+            body = m.group("body")
+            # 安全：只允许写 cwd 内、且不是测试文件
+            target = (cwd / rel).resolve()
+            try:
+                target.relative_to(cwd.resolve())
+            except ValueError:
+                continue
+            if self._looks_like_test(rel):
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+                changed.append(rel)
+            except OSError:
+                continue
+        return changed
 
-            # 简单启发式修复策略：
-            # - ImportError / ModuleNotFoundError → 尝试添加导入
-            # - TypeError: missing positional arg → 不做自动修复
-            # - NameError → 不做自动修复
-            # - 其他 → 标记为需要人工干预
+    @staticmethod
+    def _looks_like_test(rel: str) -> bool:
+        base = Path(rel).name.lower()
+        return ("test" in base or base.endswith("_test.py")
+                or base.endswith("_test.go") or "spec" in base)
 
-            if "ImportError" in message or "ModuleNotFoundError" in message:
-                # 尝试从错误消息提取模块名
-                mod_match = re.search(r"No module named '(\S+)'", message)
-                if mod_match:
-                    module = mod_match.group(1)
-                    # 在文件头添加 import
-                    insert_line = 0
-                    for i, l in enumerate(lines):
-                        if l.strip().startswith(("import ", "from ")):
-                            insert_line = i + 1
-                    lines.insert(insert_line, f"import {module}\n")
-                    full_path.write_text("".join(lines), encoding="utf-8")
-                    fix_info["action"] = f"added_import_{module}"
-                    return fix_info
-
-            # 标记为需要人工
-            fix_info["action"] = "requires_manual_fix"
-
-        except Exception as e:
-            fix_info["action"] = f"error: {e}"
-
-        return fix_info
+    def _collect_sources(self, cwd: Path, source_files: list[str]) -> dict[str, str]:
+        """返回 {相对路径: 内容}。指定了 source_files 就用它，否则扫 cwd 非测试源。"""
+        out: dict[str, str] = {}
+        if source_files:
+            for rel in source_files:
+                p = cwd / rel
+                if p.is_file():
+                    try:
+                        out[rel] = p.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError):
+                        pass
+            return out
+        exts = (".py", ".go", ".js", ".ts", ".rs", ".java", ".cpp", ".c")
+        for p in sorted(cwd.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in exts:
+                continue
+            rel = str(p.relative_to(cwd))
+            if self._looks_like_test(rel) or "/." in f"/{rel}":
+                continue
+            try:
+                out[rel] = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            if len(out) >= 10:  # 防止上下文爆炸
+                break
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -579,11 +613,11 @@ class TddWatchTool(Tool):
 # 注册
 # ---------------------------------------------------------------------------
 
-def register_tdd_tools(registry: Any = None) -> None:
-    """注册所有 TDD 工具"""
+def register_tdd_tools(registry: Any = None, parent_agent: Any = None) -> None:
+    """注册所有 TDD 工具。parent_agent 供 tdd_fix_loop 调用模型做真实修复。"""
     from .registry import get_registry
 
     reg = registry or get_registry()
     reg.register(TddRunTestsTool())
-    reg.register(TddFixLoopTool())
+    reg.register(TddFixLoopTool(parent_agent=parent_agent))
     reg.register(TddWatchTool())

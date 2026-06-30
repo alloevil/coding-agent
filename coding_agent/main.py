@@ -105,6 +105,10 @@ class CodingAgent:
         
         # 设置模型调用函数
         self.agent_loop.set_model_call_fn(self._call_model)
+        # tdd_fix_loop 需要父 agent 来调用模型做真实修复闭环
+        _fix_tool = self.tool_registry.get_tool("tdd_fix_loop")
+        if _fix_tool is not None:
+            _fix_tool._parent_agent = self.agent_loop
         # token 预算：让 agent loop 能查询累计 token
         self.agent_loop.set_token_usage_fn(
             lambda: self.model_client.total_prompt_tokens

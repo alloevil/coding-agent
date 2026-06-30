@@ -218,7 +218,7 @@ class TestTddFixLoopTool:
 
     @pytest.mark.asyncio
     async def test_execute_all_pass_first_try(self, tmp_path):
-        """第一次就全部通过"""
+        """第一次就全部通过：不进修复循环。"""
         tool = TddFixLoopTool()
         pass_result = TestResult(passed=3, failed=0, raw_output="all passed")
 
@@ -227,89 +227,28 @@ class TestTddFixLoopTool:
             data = json.loads(output)
             assert data["final_passed"] == 3
             assert data["final_failed"] == 0
-            assert data["total_iterations"] == 1
-            assert data["iterations"][0]["status"] == "all_passed"
+            assert data["fixed"] is True
+            assert data["total_iterations"] == 0
 
     @pytest.mark.asyncio
-    async def test_execute_fix_import_error(self, tmp_path):
-        """测试自动修复 ImportError"""
-        # 创建一个会 ImportError 的测试文件
-        test_file = tmp_path / "test_foo.py"
-        test_file.write_text("def test_bar():\n    assert True\n")
-
-        tool = TddFixLoopTool()
-
-        # 第一次运行：失败（ImportError）
-        fail_result = TestResult(
-            passed=0,
-            failed=1,
-            errors=[{"file": "test_foo.py", "line": 1, "message": "ModuleNotFoundError: No module named 'mylib'"}],
-            raw_output="FAILED",
-        )
-        # 第二次运行：成功
-        pass_result = TestResult(passed=1, failed=0, raw_output="passed")
-
-        call_count = 0
-
-        async def mock_run(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return fail_result
-            return pass_result
-
-        with patch.object(TestRunner, "run_tests", side_effect=mock_run):
-            output = await tool.execute(workdir=str(tmp_path), max_iterations=3)
-            data = json.loads(output)
-            assert data["final_passed"] == 1
-            # 验证文件被修改（添加了 import）
-            content = test_file.read_text()
-            assert "import mylib" in content
-
-    @pytest.mark.asyncio
-    async def test_execute_max_iterations_exceeded(self, tmp_path):
-        """超过最大迭代次数"""
-        tool = TddFixLoopTool()
-        fail_result = TestResult(
-            passed=0,
-            failed=1,
-            errors=[{"file": "test_foo.py", "line": 1, "message": "TypeError: bad call"}],
-            raw_output="FAILED",
-        )
+    async def test_execute_no_model_returns_failures(self, tmp_path):
+        """无 parent_agent（无模型）：失败时把结果交回主循环，不空转。"""
+        tool = TddFixLoopTool()  # parent_agent=None
+        fail_result = TestResult(passed=0, failed=1, raw_output="FAILED")
 
         with patch.object(TestRunner, "run_tests", new_callable=AsyncMock, return_value=fail_result):
-            output = await tool.execute(workdir=str(tmp_path), max_iterations=2)
+            output = await tool.execute(workdir=str(tmp_path), max_iterations=3)
             data = json.loads(output)
-            assert data["total_iterations"] == 2
-            assert data["final_failed"] == 1
+            assert data["fixed"] is False
+            assert data["iterations"][0]["action"] == "no_model_returned_failures"
 
     @pytest.mark.asyncio
-    async def test_attempt_fix_no_file(self, tmp_path):
-        """修复时文件路径为空"""
+    async def test_looks_like_test_guard(self):
         tool = TddFixLoopTool()
-        result = await tool._attempt_fix(tmp_path, {"file": "", "line": 0, "message": "err"}, "pytest")
-        assert result["action"] == "skipped_no_file"
-
-    @pytest.mark.asyncio
-    async def test_attempt_fix_file_not_found(self, tmp_path):
-        """修复时文件不存在"""
-        tool = TddFixLoopTool()
-        result = await tool._attempt_fix(tmp_path, {"file": "nonexistent.py", "line": 0, "message": "err"}, "pytest")
-        assert result["action"] == "skipped_file_not_found"
-
-    @pytest.mark.asyncio
-    async def test_attempt_fix_requires_manual(self, tmp_path):
-        """无法自动修复的错误"""
-        test_file = tmp_path / "test_foo.py"
-        test_file.write_text("def test_bar():\n    assert 1 == 2\n")
-
-        tool = TddFixLoopTool()
-        result = await tool._attempt_fix(
-            tmp_path,
-            {"file": "test_foo.py", "line": 2, "message": "AssertionError: 1 != 2"},
-            "pytest",
-        )
-        assert result["action"] == "requires_manual_fix"
+        assert tool._looks_like_test("calc_test.py") is True
+        assert tool._looks_like_test("test_foo.py") is True
+        assert tool._looks_like_test("foo.spec.js") is True
+        assert tool._looks_like_test("calc.py") is False
 
 
 # ---------------------------------------------------------------------------
