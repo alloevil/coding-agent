@@ -156,6 +156,19 @@ class CodingAgent:
     
     async def start(self, session_id: str | None = None) -> None:
         """启动 Agent"""
+        # 连接已配置的 MCP servers（失败降级，不阻塞启动）
+        self._mcp_clients = []
+        if getattr(self.config, "mcp_servers", None):
+            from .tools.mcp_client import register_mcp_servers
+            try:
+                self._mcp_clients = await register_mcp_servers(
+                    self.config.mcp_servers, self.tool_registry
+                )
+                if self._mcp_clients:
+                    print(f"   MCP: connected {len(self._mcp_clients)} server(s)")
+            except Exception as e:
+                print(f"   MCP: failed to connect ({e})")
+
         # 加载或创建会话
         if session_id:
             self.state = self.session_store.load_state(session_id)

@@ -34,6 +34,8 @@ class AgentConfig:
     stream: bool = True  # 是否流式输出
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
+    # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}
+    mcp_servers: dict[str, Any] = field(default_factory=dict)
     
     # 会话配置
     session_db_path: str = "/tmp/.coding-agent/sessions.db"
