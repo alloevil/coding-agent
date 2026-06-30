@@ -55,7 +55,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Slash commands | ✅ (built-in + custom) | ✅ (`/init` etc + custom) | ✅ (custom templated) |
 | Hooks (lifecycle) | ✅ (all events fire; config command hooks) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
-| TUI | ❌ (CLI + Go protocol) | ✅ | ✅ (rich TUI) |
+| TUI | 🟡 (rich TUI via --tui; CLI + Go protocol) | ✅ | ✅ (rich TUI) |
 | Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`) | ✅ | ✅ |
 | Multimodal (images) | ❌ | ✅ | ✅ |
 | Cost/token budget stop | ✅ (max_total_tokens) | ✅ | 🟡 |
