@@ -98,10 +98,16 @@ class CodingAgent:
         支持 OpenAI 兼容 API（包括小米 mify）。
         """
         on_delta = (lambda chunk: print(chunk, end="", flush=True)) if self.config.stream else None
+        # 推理增量用暗色前缀打印，和正文区分
+        on_reasoning = (
+            (lambda chunk: print(f"\033[2m{chunk}\033[0m", end="", flush=True))
+            if self.config.stream else None
+        )
         return await self.model_client.complete(
             context,
             tools,
             on_text_delta=on_delta,
+            on_reasoning_delta=on_reasoning,
             stream=self.config.stream,
         )
 
@@ -302,8 +308,10 @@ Permissions:
             print(f"✨ Done in {turns} turns")
             mc = self.model_client
             if mc.total_prompt_tokens:
+                reasoning = (f", reasoning: {mc.total_reasoning_tokens}"
+                             if mc.total_reasoning_tokens else "")
                 print(f"   Tokens: {mc.total_prompt_tokens} in / "
-                      f"{mc.total_completion_tokens} out "
+                      f"{mc.total_completion_tokens} out{reasoning} "
                       f"(cache hits: {mc.cache_hit_rate*100:.0f}%)")
 
 
