@@ -418,6 +418,56 @@ class FileSearchTool(Tool):
             return f"Error searching files: {str(e)}"
 
 
+async def _ripgrep_grep(pattern: str, path: str, include: str | None,
+                        include_ignored: bool) -> str | None:
+    """
+    用 ripgrep 执行内容搜索；rg 不可用返回 None（让调用方回退 Python 实现）。
+
+    rg 原生尊重 .gitignore、速度快。--max-count 之外用总量 100 行截断。
+    """
+    import shutil
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+
+    LIMIT = 100
+    args = [rg, "--line-number", "--no-heading", "--color=never",
+            "--ignore-case", "-m", str(LIMIT)]
+    if include:
+        args += ["--glob", include]
+    if include_ignored:
+        args += ["--no-ignore", "--hidden"]
+    else:
+        # 与 Python 实现一致：显式排除噪音目录（rg 的 .gitignore 之外再加一层）
+        for d in DEFAULT_IGNORE_DIRS:
+            args += ["--glob", f"!**/{d}/**"]
+    args += ["--", pattern, path]
+
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
+        return None
+
+    # rg 退出码：0=有匹配，1=无匹配，2=错误。2 时回退 Python（如正则语法差异）
+    if proc.returncode == 1:
+        return f"No matches found for '{pattern}'"
+    if proc.returncode not in (0, 1):
+        return None
+
+    lines = out.decode("utf-8", errors="replace").splitlines()
+    lines = [ln for ln in lines if ln.strip()][:LIMIT]
+    if not lines:
+        return f"No matches found for '{pattern}'"
+    result = f"Found {len(lines)} matches:\n" + "\n".join(lines)
+    if len(lines) >= LIMIT:
+        result += f"\n... (truncated, showing first {LIMIT} matches)"
+    return result
+
+
 class GrepTool(Tool):
     """内容搜索"""
     
@@ -469,6 +519,11 @@ class GrepTool(Tool):
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
 
+        # 优先用 ripgrep（快、原生尊重 .gitignore）；不可用则回退 Python 实现
+        rg_result = await _ripgrep_grep(pattern, path, include, include_ignored)
+        if rg_result is not None:
+            return rg_result
+
         ignore_dirs = frozenset() if include_ignored else DEFAULT_IGNORE_DIRS
 
         try:
@@ -490,17 +545,17 @@ class GrepTool(Tool):
                                 break
                 except (UnicodeDecodeError, PermissionError):
                     continue
-                
+
                 if len(results) >= 100:
                     break
-            
+
             if not results:
                 return f"No matches found for '{pattern}'"
-            
+
             result = f"Found {len(results)} matches:\n" + "\n".join(results)
             if len(results) >= 100:
                 result += "\n... (truncated, showing first 100 matches)"
-            
+
             return result
         except Exception as e:
             return f"Error searching: {str(e)}"
