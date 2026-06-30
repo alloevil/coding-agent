@@ -104,12 +104,45 @@ def _block_anchor(content: str, find: str) -> Iterator[str]:
                 break
 
 
+def _escape_normalized(content: str, find: str) -> Iterator[str]:
+    """把 find 里的字面转义（\\n \\t \\" 等）解为真实字符后再按行级匹配。
+
+    模型有时把 old_text 写成带字面反斜杠的形式（例如从字符串字面量里拷的）。
+    """
+    import re
+
+    def unescape(s: str) -> str:
+        return re.sub(
+            r'\\(n|t|r|\'|"|`|\\)',
+            lambda m: {"n": "\n", "t": "\t", "r": "\r",
+                       "'": "'", '"': '"', "`": "`", "\\": "\\"}[m.group(1)],
+            s,
+        )
+
+    nfind = unescape(find)
+    if nfind == find:
+        return  # 没有可解的转义，交给其它策略
+    # 解码后做精确 + 行级 strip 两种尝试
+    if nfind in content:
+        yield nfind
+    yield from _line_trimmed(content, nfind)
+
+
+def _trimmed_boundary(content: str, find: str) -> Iterator[str]:
+    """忽略 find 首尾整体空白后匹配（容忍多余的前导/尾随空行或空格）。"""
+    stripped = find.strip()
+    if stripped and stripped != find and stripped in content:
+        yield stripped
+
+
 _STRATEGIES = [
     _exact,
     _line_trimmed,
     _whitespace_normalized,
     _indentation_flexible,
     _block_anchor,
+    _escape_normalized,
+    _trimmed_boundary,
 ]
 
 

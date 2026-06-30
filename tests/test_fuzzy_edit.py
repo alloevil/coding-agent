@@ -71,3 +71,17 @@ def test_disproportionate_match_rejected():
     # 故意用首尾行作 old，使 block_anchor 想匹配整个 20 行块
     with pytest.raises(ReplaceError):
         fuzzy_replace(content, "start\nXXX\nend", "replaced")
+
+
+def test_escape_normalized():
+    # 文件里是真实换行；old_text 写成了字面 \n
+    content = "line1\nline2\n"
+    out = fuzzy_replace(content, "line1\\nline2", "replaced")
+    assert "replaced" in out
+
+
+def test_trimmed_boundary():
+    # old_text 带多余前后空白
+    content = "alpha\nbeta\n"
+    out = fuzzy_replace(content, "  beta  ", "BETA")
+    assert "BETA" in out
