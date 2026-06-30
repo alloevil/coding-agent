@@ -251,20 +251,16 @@ async def _run_subagent(
     # 创建独立的 state
     child_state = AgentState(max_turns=max_turns)
 
-    # 创建子代理 AgentLoop（共享 tool_registry）
-    # 注意：不能通过 __init__ 创建，因为会重新注册 agent_tools 覆盖父代理的引用
-    child_agent = object.__new__(AgentLoop)
-    child_agent.config = child_config
-    child_agent.tool_registry = parent_agent.tool_registry
-    child_agent._spawn_depth = parent_depth + 1
-    child_agent._model_call_fn = None
-    child_agent._permission_handler = None
-
-    # 延迟初始化 session_store 和 context_manager
-    from ..memory.session import SessionStore
-    from ..context.manager import ContextManager
-    child_agent.session_store = SessionStore(db_path=child_config.session_db_path)
-    child_agent.context_manager = ContextManager(max_tokens=child_config.max_context_tokens)
+    # 创建子代理 AgentLoop（共享 tool_registry）。
+    # register_builtin_tools=False：不重新注册 agent_spawn/agent_parallel，
+    # 保留父代理在共享 registry 中的引用。其余字段（_interrupt_event、
+    # retry_config、rollback_log 等）由 __init__ 正常初始化。
+    child_agent = AgentLoop(
+        config=child_config,
+        tool_registry=parent_agent.tool_registry,
+        register_builtin_tools=False,
+        spawn_depth=parent_depth + 1,
+    )
 
     # 注入模型调用函数（继承父代理的）
     if parent_agent._model_call_fn:

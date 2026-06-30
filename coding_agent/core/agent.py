@@ -33,7 +33,8 @@ from .state import AgentState, Message, MessageRole, ToolCall
 from .config import AgentConfig
 from ..tools.registry import ToolRegistry, get_registry
 from ..tools.base import ToolPermission
-from ..context.manager import ContextManager
+# 注意：ContextManager 在 __init__ 内延迟导入，避免
+# context.manager <-> core.state <-> core.agent 的循环导入。
 
 # 延迟导入避免循环依赖
 from typing import TYPE_CHECKING
@@ -177,44 +178,48 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         session_store: "SessionStore | None" = None,
         retry_config: RetryConfig | None = None,
+        register_builtin_tools: bool = True,
+        spawn_depth: int = 0,
     ):
         self.config = config
         self.tool_registry = tool_registry or get_registry()
-        
+
         # 延迟导入避免循环依赖
         if session_store is None:
             from ..memory.session import SessionStore
             session_store = SessionStore(db_path=config.session_db_path)
         self.session_store = session_store
-        
+
+        from ..context.manager import ContextManager
         self.context_manager = ContextManager(max_tokens=config.max_context_tokens)
-        
+
         # 模型调用函数（需要外部注入）
         self._model_call_fn: Any = None
-        
+
         # 权限确认回调
         self._permission_handler: PermissionHandler | None = None
-        
+
         # 子代理深度追踪（0 = 根代理）
-        self._spawn_depth: int = 0
-        
+        self._spawn_depth: int = spawn_depth
+
         # ---- 中断恢复 ----
         self._interrupt_event = asyncio.Event()
         self._interrupted: bool = False
-        
+
         # ---- 错误恢复 ----
         self.retry_config = retry_config or RetryConfig()
-        
+
         # ---- 工具回滚 ----
         self.rollback_log = RollbackLog()
-        
-        # 自动注册子代理工具（延迟导入避免循环依赖）
-        from ..tools.agent_ops import register_agent_tools
-        register_agent_tools(self.tool_registry, self)
-        
-        # 注册回滚工具
-        self._register_rollback_tool()
-    
+
+        # 自动注册子代理工具 + 回滚工具。
+        # 子代理传 register_builtin_tools=False，避免用自己的引用覆盖父代理
+        # 已注册的 agent_spawn/agent_parallel（它们共享同一个 tool_registry）。
+        if register_builtin_tools:
+            from ..tools.agent_ops import register_agent_tools
+            register_agent_tools(self.tool_registry, self)
+            self._register_rollback_tool()
+
     def set_model_call_fn(self, fn: Any) -> None:
         """设置模型调用函数"""
         self._model_call_fn = fn
@@ -312,78 +317,134 @@ class AgentLoop:
                 break
             
             # 8. Tool dispatch + execution
-            for tool_call in tool_calls:
-                yield AgentEventData(
-                    event=AgentEvent.TOOL_CALL,
-                    data={
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "arguments": tool_call.arguments
-                    }
-                )
-                
-                # 9. Permission gate
-                tool = self.tool_registry.get_tool(tool_call.name)
-                if not tool:
-                    result = f"Error: Tool '{tool_call.name}' not found"
-                    is_error = True
-                elif self._needs_permission(tool.permission):
-                    # 请求权限确认
-                    yield AgentEventData(
-                        event=AgentEvent.PERMISSION_REQUEST,
-                        data={
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": tool_call.arguments,
-                            "permission": tool.permission.value
-                        }
-                    )
-                    
-                    # 调用权限确认回调
-                    if self._permission_handler:
-                        try:
-                            approved = await self._permission_handler(
-                                tool_call.name,
-                                tool_call.arguments
-                            )
-                        except Exception as e:
-                            approved = False
-                            yield AgentEventData(
-                                event=AgentEvent.ERROR,
-                                data={"error": f"Permission handler error: {e}"}
-                            )
-                    else:
-                        # 没有权限处理器，默认拒绝
-                        approved = False
-                    
-                    if approved:
-                        result, is_error = await self._execute_with_recovery(
-                            tool_call, state
-                        )
-                    else:
-                        result = f"Permission denied for tool '{tool_call.name}'"
-                        is_error = True
-                else:
-                    # 自动允许（READ 权限）
-                    result, is_error = await self._execute_with_recovery(
-                        tool_call, state
-                    )
-                
-                # 添加工具结果
-                state.add_tool_result(tool_call.id, result, is_error)
-                
-                yield AgentEventData(
-                    event=AgentEvent.TOOL_RESULT,
-                    data={
-                        "id": tool_call.id,
-                        "result": result,
-                        "is_error": is_error
-                    }
-                )
-        
+            #    连续的只读(自动放行)工具并发执行；其余串行、保持顺序。
+            i = 0
+            while i < len(tool_calls):
+                # 收集一段连续的可并行(只读)调用
+                group: list[ToolCall] = []
+                while i < len(tool_calls) and self._is_parallelizable(tool_calls[i]):
+                    group.append(tool_calls[i])
+                    i += 1
+                if len(group) >= 2:
+                    async for ev in self._dispatch_parallel(group, state):
+                        yield ev
+                    continue
+                if group:
+                    # 只有一个可并行调用，按串行处理即可
+                    async for ev in self._dispatch_one(group[0], state):
+                        yield ev
+                    continue
+                # 非并行调用(需权限/写/执行/未知)，串行处理
+                async for ev in self._dispatch_one(tool_calls[i], state):
+                    yield ev
+                i += 1
+
         # 保存会话
         if state.session_id:
             self.session_store.save_state(state.session_id, state)
+
+    def _is_parallelizable(self, tool_call: ToolCall) -> bool:
+        """工具是否可并发执行：存在、READ 权限、且当前配置下自动放行。"""
+        tool = self.tool_registry.get_tool(tool_call.name)
+        if tool is None:
+            return False
+        if tool.permission != ToolPermission.READ:
+            return False
+        return not self._needs_permission(tool.permission)
+
+    async def _dispatch_one(
+        self, tool_call: ToolCall, state: AgentState
+    ) -> AsyncGenerator[AgentEventData, None]:
+        """串行处理单个工具调用：事件 -> 权限门 -> 执行 -> 结果。"""
+        yield AgentEventData(
+            event=AgentEvent.TOOL_CALL,
+            data={
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+            },
+        )
+
+        # 9. Permission gate
+        tool = self.tool_registry.get_tool(tool_call.name)
+        if not tool:
+            result = f"Error: Tool '{tool_call.name}' not found"
+            is_error = True
+        elif self._needs_permission(tool.permission):
+            yield AgentEventData(
+                event=AgentEvent.PERMISSION_REQUEST,
+                data={
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                    "permission": tool.permission.value,
+                },
+            )
+            if self._permission_handler:
+                try:
+                    approved = await self._permission_handler(
+                        tool_call.name, tool_call.arguments
+                    )
+                except Exception as e:
+                    approved = False
+                    yield AgentEventData(
+                        event=AgentEvent.ERROR,
+                        data={"error": f"Permission handler error: {e}"},
+                    )
+            else:
+                approved = False
+
+            if approved:
+                result, is_error = "", False
+                async for item in self._recovery_events(tool_call, state):
+                    if isinstance(item, tuple):
+                        result, is_error = item
+                    else:
+                        yield item
+            else:
+                result = f"Permission denied for tool '{tool_call.name}'"
+                is_error = True
+        else:
+            # 自动允许（READ 权限）
+            result, is_error = "", False
+            async for item in self._recovery_events(tool_call, state):
+                if isinstance(item, tuple):
+                    result, is_error = item
+                else:
+                    yield item
+
+        state.add_tool_result(tool_call.id, result, is_error)
+        yield AgentEventData(
+            event=AgentEvent.TOOL_RESULT,
+            data={"id": tool_call.id, "result": result, "is_error": is_error},
+        )
+
+    async def _dispatch_parallel(
+        self, group: list[ToolCall], state: AgentState
+    ) -> AsyncGenerator[AgentEventData, None]:
+        """并发执行一组只读工具：先发全部 TOOL_CALL，并发执行，再按序发结果。"""
+        for tc in group:
+            yield AgentEventData(
+                event=AgentEvent.TOOL_CALL,
+                data={"id": tc.id, "name": tc.name, "arguments": tc.arguments},
+            )
+
+        # 并发执行（只读工具无副作用、不需回滚；不透传重试事件以避免交错）
+        results = await asyncio.gather(
+            *(self._execute_with_recovery(tc, state) for tc in group),
+            return_exceptions=True,
+        )
+
+        for tc, res in zip(group, results):
+            if isinstance(res, Exception):
+                result, is_error = f"Error executing tool '{tc.name}': {res}", True
+            else:
+                result, is_error = res
+            state.add_tool_result(tc.id, result, is_error)
+            yield AgentEventData(
+                event=AgentEvent.TOOL_RESULT,
+                data={"id": tc.id, "result": result, "is_error": is_error},
+            )
     
     async def _call_model(self, context: list[dict[str, Any]]) -> dict[str, Any]:
         """调用模型"""
@@ -472,10 +533,14 @@ class AgentLoop:
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        event_cb: Callable[[AgentEventData], None] | None = None,
     ) -> tuple[str, bool]:
         """
         执行工具，带自动重试。
-        
+
+        Args:
+            event_cb: 可选回调，重试发生时收到 RETRYING 事件（用于向 UI 实时通知）。
+
         Returns:
             (result_str, is_error)
         """
@@ -517,9 +582,17 @@ class AgentLoop:
             # 还有重试机会
             if attempt < cfg.max_retries:
                 delay = cfg.base_delay * (cfg.backoff_factor ** attempt)
-                # 发送重试事件
-                # 注意：这里我们没法直接 yield，所以记录到 metadata
-                # 外层 run() 会通过另一个方式通知
+                if event_cb is not None:
+                    event_cb(AgentEventData(
+                        event=AgentEvent.RETRYING,
+                        data={
+                            "tool_name": tool_name,
+                            "attempt": attempt + 1,
+                            "max_retries": cfg.max_retries,
+                            "delay": delay,
+                            "error": last_error[:300],
+                        },
+                    ))
                 await asyncio.sleep(delay)
         
         # 所有重试用完
@@ -688,67 +761,73 @@ class AgentLoop:
     # -----------------------------------------------------------------------
     # 带回滚 + 重试的执行入口
     # -----------------------------------------------------------------------
-    
-    # -----------------------------------------------------------------------
-    # 任务完成验证
-    # -----------------------------------------------------------------------
-    
-    async def _verify_completion(self, state: AgentState) -> str | None:
-        """
-        验证任务是否真正完成。
-        
-        Returns:
-            None if task is complete, or error message if issues found.
-        """
-        import os
-        from pathlib import Path
-        
-        # 检查最近的助手消息中是否提到了创建文件
-        recent_messages = state.messages[-5:] if len(state.messages) > 5 else state.messages
-        
-        # 收集提到的文件名
-        mentioned_files = set()
-        for msg in recent_messages:
-            if msg.role == MessageRole.ASSISTANT:
-                content = msg.content if hasattr(msg, 'content') and msg.content else str(msg)
-                # 提取文件名
-                import re
-                # 匹配常见文件名模式
-                files = re.findall(r'[\w/\\.-]+\.[\w]+', content)
-                mentioned_files.update(files)
-        
-        # 检查这些文件是否存在
-        missing_files = []
-        for f in mentioned_files:
-            if not Path(f).exists():
-                missing_files.append(f)
-        
-        if missing_files:
-            return f"Some mentioned files don't exist: {', '.join(missing_files[:5])}"
-        
-        return None
-    
+
     async def _execute_with_recovery(
         self,
         tool_call: ToolCall,
         state: AgentState,
+        event_cb: Callable[[AgentEventData], None] | None = None,
     ) -> tuple[str, bool]:
         """
         完整的工具执行流程：回滚记录 -> 中断检查 -> 重试执行。
-        
+
+        Args:
+            event_cb: 可选回调，转发执行期间的事件（如 RETRYING）。
+
         Returns:
             (result_str, is_error)
         """
         tool = self.tool_registry.get_tool(tool_call.name)
-        
+
         # 记录回滚信息（WRITE/EXECUTE 权限工具）
         if tool and tool.permission in (ToolPermission.WRITE, ToolPermission.EXECUTE):
             await self._record_rollback_info(tool_call.name, tool_call.arguments)
-        
+
         # 带重试执行
         result, is_error = await self._execute_with_retry(
             tool_call.name,
             tool_call.arguments,
+            event_cb=event_cb,
         )
-        
+
         return result, is_error
+
+    async def _recovery_events(
+        self,
+        tool_call: ToolCall,
+        state: AgentState,
+    ) -> AsyncGenerator[AgentEventData | tuple[str, bool], None]:
+        """
+        运行 _execute_with_recovery，并在执行期间实时 yield 中间事件
+        （如 RETRYING）。最后 yield 一个 (result, is_error) 元组作为结果哨兵。
+
+        用法：
+            async for item in self._recovery_events(tc, state):
+                if isinstance(item, tuple):
+                    result, is_error = item
+                else:
+                    yield item  # 转发中间事件
+        """
+        queue: asyncio.Queue[AgentEventData] = asyncio.Queue()
+
+        def _cb(ev: AgentEventData) -> None:
+            queue.put_nowait(ev)
+
+        task = asyncio.ensure_future(
+            self._execute_with_recovery(tool_call, state, event_cb=_cb)
+        )
+
+        # 边执行边把队列里的事件吐出去
+        while not task.done():
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.05)
+                yield ev
+            except asyncio.TimeoutError:
+                continue
+
+        # 排空剩余事件
+        while not queue.empty():
+            yield queue.get_nowait()
+
+        result, is_error = await task
+        yield (result, is_error)

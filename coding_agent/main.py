@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import urllib.request
-import json
 from typing import Any
 
 from .core import AgentLoop, AgentConfig, AgentState, AgentEvent, AgentEventData
+from .core.model_client import ModelClient
 from .tools import get_registry
 from .tools.base import ToolPermission
 from .tools.file_ops import register_file_tools
@@ -43,7 +42,7 @@ class CodingAgent:
     
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig.from_env()
-        
+
         # 初始化工具
         self.tool_registry = get_registry()
         register_file_tools()
@@ -51,9 +50,29 @@ class CodingAgent:
         register_git_tools()
         register_browser_tools()
         register_lsp_tools()
-        
+        from .tools.plan_ops import register_plan_tools
+        from .tools.patch_ops import register_patch_tools
+        from .tools.tdd_ops import register_tdd_tools
+        from .tools.memory_ops import register_memory_tools
+        from .tools.web_ops import register_web_tools
+        self.plan_tool = register_plan_tools()
+        register_patch_tools()
+        register_tdd_tools()
+        register_memory_tools()
+        register_web_tools()
+
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
+
+        # 统一模型客户端
+        self.model_client = ModelClient(
+            api_key=self.config.api_key,
+            base_url=self.config.api_base_url,
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+            extra_headers=self.config.extra_headers,
+        )
         
         # 初始化 Agent Loop
         self.agent_loop = AgentLoop(
@@ -73,94 +92,19 @@ class CodingAgent:
     
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """
-        调用模型（支持流式输出）
-        
-        支持 OpenAI 兼容 API（包括小米 mify）
+        调用模型（支持流式输出）。
+
+        委托给统一的 ModelClient；流式文本通过回调直接打印到终端。
+        支持 OpenAI 兼容 API（包括小米 mify）。
         """
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
-        }
-        
-        payload: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": context,
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
-            "stream": True,  # 启用流式输出
-        }
-        
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        
-        # 流式调用
-        def _stream_call():
-            req = urllib.request.Request(
-                f"{self.config.api_base_url}/chat/completions",
-                data=json.dumps(payload).encode(),
-                headers=headers
-            )
-            return urllib.request.urlopen(req, timeout=120)
-        
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, _stream_call)
-        
-        # 解析 SSE 流
-        content_parts = []
-        tool_calls_data = []
-        current_tool_call = None
-        
-        for line in response:
-            line = line.decode("utf-8", errors="replace").strip()
-            if not line or line == "data: [DONE]":
-                continue
-            if not line.startswith("data: "):
-                continue
-            
-            try:
-                data = json.loads(line[6:])
-                choices = data.get("choices", [])
-                if not choices:
-                    continue
-                
-                delta = choices[0].get("delta", {})
-                
-                # 内容
-                if delta.get("content"):
-                    chunk = delta["content"]
-                    content_parts.append(chunk)
-                    print(chunk, end="", flush=True)
-                
-                # 工具调用
-                if delta.get("tool_calls"):
-                    for tc_delta in delta["tool_calls"]:
-                        tc_index = tc_delta.get("index", 0)
-                        
-                        # 确保有足够的工具调用槽位
-                        while len(tool_calls_data) <= tc_index:
-                            tool_calls_data.append({
-                                "id": "",
-                                "function": {"name": "", "arguments": ""}
-                            })
-                        
-                        tc = tool_calls_data[tc_index]
-                        
-                        if tc_delta.get("id"):
-                            tc["id"] = tc_delta["id"]
-                        if tc_delta.get("function", {}).get("name"):
-                            tc["function"]["name"] += tc_delta["function"]["name"]
-                        if tc_delta.get("function", {}).get("arguments"):
-                            tc["function"]["arguments"] += tc_delta["function"]["arguments"]
-                            
-            except json.JSONDecodeError:
-                continue
-        
-        return {
-            "content": "".join(content_parts),
-            "tool_calls": tool_calls_data if tool_calls_data else []
-        }
-    
+        on_delta = (lambda chunk: print(chunk, end="", flush=True)) if self.config.stream else None
+        return await self.model_client.complete(
+            context,
+            tools,
+            on_text_delta=on_delta,
+            stream=self.config.stream,
+        )
+
     async def _confirm_permission(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """
         权限确认回调
@@ -224,7 +168,12 @@ class CodingAgent:
             self.state = AgentState(
                 session_id=self.session_store.create_session()
             )
-        
+
+        # 把计划工具绑定到当前会话状态
+        self.plan_tool.bind_state(self.state)
+        # 用 session_id 作为 prompt 缓存键，提高稳定前缀的缓存命中率
+        self.model_client.prompt_cache_key = self.state.session_id
+
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")
         print(f"   Model: {self.config.model}")
@@ -253,6 +202,8 @@ class CodingAgent:
                 self.state = AgentState(
                     session_id=self.session_store.create_session()
                 )
+                self.plan_tool.bind_state(self.state)
+                self.model_client.prompt_cache_key = self.state.session_id
                 print("✨ Started new session")
                 continue
             
@@ -325,11 +276,22 @@ Permissions:
         
         elif event.event == AgentEvent.COMPACTING:
             print("\n📦 Compacting context...")
-        
+
+        elif event.event == AgentEvent.RETRYING:
+            d = event.data
+            print(f"\n🔁 Retrying {d.get('tool_name')} "
+                  f"(attempt {d.get('attempt')}/{d.get('max_retries')}, "
+                  f"waiting {d.get('delay'):.1f}s)...")
+
         elif event.event == AgentEvent.DONE:
             turns = event.data["turns"]
             print(f"\n{'=' * 50}")
             print(f"✨ Done in {turns} turns")
+            mc = self.model_client
+            if mc.total_prompt_tokens:
+                print(f"   Tokens: {mc.total_prompt_tokens} in / "
+                      f"{mc.total_completion_tokens} out "
+                      f"(cache hits: {mc.cache_hit_rate*100:.0f}%)")
 
 
 async def main() -> None:
@@ -346,5 +308,13 @@ async def main() -> None:
     await agent.start()
 
 
+def cli() -> None:
+    """Synchronous entry point for the `coding-agent` console script."""
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nGoodbye!")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    cli()

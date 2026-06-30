@@ -21,7 +21,8 @@ class AgentConfig:
     api_key: str = ""
     api_base_url: str = "https://api.openai.com/v1"
     max_tokens: int = 4096
-    temperature: float = 0.7
+    temperature: float | None = 0.7  # None 时省略该字段（GPT-5 等只接受默认温度）
+    extra_headers: dict[str, str] = field(default_factory=dict)  # 网关自定义 header
     
     # Context 配置
     max_context_tokens: int = 200000
@@ -30,18 +31,29 @@ class AgentConfig:
     # 行为配置
     auto_approve: bool = False
     max_turns: int = 100
+    stream: bool = True  # 是否流式输出
     
     # 会话配置
     session_db_path: str = "/tmp/.coding-agent/sessions.db"
     
     # 系统提示词
     system_prompt: str = """You are a helpful AI coding assistant. You can:
-- Read and write files
-- Execute shell commands
-- Search code with grep/glob
-- Manage git repositories
+- Read and write files (file_read, file_write, file_edit, apply_patch)
+- Execute shell commands (shell_exec)
+- Search code (grep, file_search, list_files)
+- Manage git repositories (git_status, git_diff, git_commit)
+- Run the project's tests (tdd_run_tests)
+- Track multi-step work (update_plan)
 
 Always think step by step before taking action. When editing files, make minimal, focused changes.
+
+For any task with more than ~2 steps, call update_plan first to lay out the steps,
+then keep it current: mark exactly one step in_progress, and mark steps completed
+as you finish them.
+
+Before declaring a task done, VERIFY your work: run tdd_run_tests (or the relevant
+build/test command via shell_exec) and re-read changed files. Do not claim success
+on unverified changes.
 """
     
     @classmethod

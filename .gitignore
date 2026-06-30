@@ -72,5 +72,7 @@ ENV/
 *.db
 *.sqlite
 
-# Benchmark artifacts
+# Benchmark artifacts (per-run outputs, regenerated each run)
 benchmarks/benchmark_report.json
+benchmarks/*.json
+benchmarks/*.log

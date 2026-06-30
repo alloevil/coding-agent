@@ -25,6 +25,7 @@ import sys
 from typing import Any
 
 from .core import AgentLoop, AgentConfig, AgentState, AgentEvent, AgentEventData
+from .core.model_client import ModelClient
 from .tools import get_registry
 from .tools.file_ops import register_file_tools
 from .tools.shell import register_shell_tools
@@ -47,6 +48,16 @@ class AgentProtocol:
         register_file_tools()
         register_shell_tools()
         register_git_tools()
+        from .tools.plan_ops import register_plan_tools
+        from .tools.patch_ops import register_patch_tools
+        from .tools.tdd_ops import register_tdd_tools
+        from .tools.memory_ops import register_memory_tools
+        from .tools.web_ops import register_web_tools
+        self.plan_tool = register_plan_tools()
+        register_patch_tools()
+        register_tdd_tools()
+        register_memory_tools()
+        register_web_tools()
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)
@@ -54,6 +65,15 @@ class AgentProtocol:
             config=config,
             tool_registry=self.tool_registry,
             session_store=self.session_store
+        )
+
+        # 统一模型客户端
+        self.model_client = ModelClient(
+            api_key=config.api_key,
+            base_url=config.api_base_url,
+            model=config.model,
+            max_tokens=config.max_tokens,
+            temperature=config.temperature,
         )
         
         # 设置模型调用
@@ -70,76 +90,13 @@ class AgentProtocol:
         self._permission_result: bool = False
     
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        """调用模型（流式）"""
-        import urllib.request
-        
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
-        }
-        payload: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": context,
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
-            "stream": True,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        
-        def _stream_call():
-            req = urllib.request.Request(
-                f"{self.config.api_base_url}/chat/completions",
-                data=json.dumps(payload).encode(),
-                headers=headers
-            )
-            return urllib.request.urlopen(req, timeout=120)
-        
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, _stream_call)
-        
-        content_parts = []
-        tool_calls_data = []
-        
-        for line in response:
-            line = line.decode("utf-8", errors="replace").strip()
-            if not line or line == "data: [DONE]":
-                continue
-            if not line.startswith("data: "):
-                continue
-            try:
-                data = json.loads(line[6:])
-                choices = data.get("choices", [])
-                if not choices:
-                    continue
-                delta = choices[0].get("delta", {})
-                
-                if delta.get("content"):
-                    chunk = delta["content"]
-                    content_parts.append(chunk)
-                    # 流式发送文本 chunk
-                    self._send_event("stream_text", {"text": chunk})
-                
-                if delta.get("tool_calls"):
-                    for tc_delta in delta["tool_calls"]:
-                        tc_index = tc_delta.get("index", 0)
-                        while len(tool_calls_data) <= tc_index:
-                            tool_calls_data.append({"id": "", "function": {"name": "", "arguments": ""}})
-                        tc = tool_calls_data[tc_index]
-                        if tc_delta.get("id"):
-                            tc["id"] = tc_delta["id"]
-                        if tc_delta.get("function", {}).get("name"):
-                            tc["function"]["name"] += tc_delta["function"]["name"]
-                        if tc_delta.get("function", {}).get("arguments"):
-                            tc["function"]["arguments"] += tc_delta["function"]["arguments"]
-            except json.JSONDecodeError:
-                continue
-        
-        return {
-            "content": "".join(content_parts),
-            "tool_calls": tool_calls_data if tool_calls_data else []
-        }
+        """调用模型（流式）。委托给统一 ModelClient；文本增量转为 stream_text 事件。"""
+        return await self.model_client.complete(
+            context,
+            tools,
+            on_text_delta=lambda chunk: self._send_event("stream_text", {"text": chunk}),
+            stream=True,
+        )
     
     async def _confirm_permission(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """权限确认：发送请求给 TUI，等待响应"""
@@ -178,7 +135,10 @@ class AgentProtocol:
                 self.state = AgentState(
                     session_id=self.session_store.create_session()
                 )
-            
+
+            # 把计划工具绑定到当前会话状态
+            self.plan_tool.bind_state(self.state)
+
             # 运行 agent
             async for event in self.agent_loop.run(self.state, content):
                 self._forward_event(event)
@@ -228,6 +188,9 @@ class AgentProtocol:
             AgentEvent.ERROR: "error",
             AgentEvent.DONE: "done",
             AgentEvent.COMPACTING: "compacting",
+            AgentEvent.RETRYING: "retrying",
+            AgentEvent.ROLLBACK: "rollback",
+            AgentEvent.INTERRUPTED: "interrupted",
         }
         
         event_type = event_map.get(event.event, "unknown")

@@ -579,10 +579,11 @@ class TddWatchTool(Tool):
 # 注册
 # ---------------------------------------------------------------------------
 
-def register_tdd_tools() -> None:
+def register_tdd_tools(registry: Any = None) -> None:
     """注册所有 TDD 工具"""
-    from .registry import register_tool
+    from .registry import get_registry
 
-    register_tool(TddRunTestsTool())
-    register_tool(TddFixLoopTool())
-    register_tool(TddWatchTool())
+    reg = registry or get_registry()
+    reg.register(TddRunTestsTool())
+    reg.register(TddFixLoopTool())
+    reg.register(TddWatchTool())

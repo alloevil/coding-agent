@@ -758,12 +758,13 @@ class LSPSymbolsTool(Tool):
 
 # ─── Registration ────────────────────────────────────────────────────
 
-def register_lsp_tools() -> None:
+def register_lsp_tools(registry: Any = None) -> None:
     """注册所有 LSP 工具"""
-    from .registry import register_tool
+    from .registry import get_registry
 
-    register_tool(LSPGotoDefinitionTool())
-    register_tool(LSPFindReferencesTool())
-    register_tool(LSPHoverTool())
-    register_tool(LSPDiagnosticsTool())
-    register_tool(LSPSymbolsTool())
+    reg = registry or get_registry()
+    reg.register(LSPGotoDefinitionTool())
+    reg.register(LSPFindReferencesTool())
+    reg.register(LSPHoverTool())
+    reg.register(LSPDiagnosticsTool())
+    reg.register(LSPSymbolsTool())

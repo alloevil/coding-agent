@@ -282,8 +282,7 @@ class TestRegistration:
         from coding_agent.tools.registry import ToolRegistry
 
         registry = ToolRegistry()
-        with patch("coding_agent.tools.lsp_ops.register_tool", registry.register):
-            register_lsp_tools()
+        register_lsp_tools(registry)
 
         tool_names = [t.name for t in registry.get_all_tools()]
         assert "lsp_goto_definition" in tool_names

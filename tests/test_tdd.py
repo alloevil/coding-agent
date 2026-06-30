@@ -426,10 +426,9 @@ class TestTddWatchTool:
 
 class TestRegisterTddTools:
     def test_register_all(self):
-        from coding_agent.tools.registry import ToolRegistry, register_tool
+        from coding_agent.tools.registry import ToolRegistry
         reg = ToolRegistry()
-        with patch("coding_agent.tools.registry.register_tool", reg.register):
-            register_tdd_tools()
+        register_tdd_tools(reg)
         assert reg.get_tool("tdd_run_tests") is not None
         assert reg.get_tool("tdd_fix_loop") is not None
         assert reg.get_tool("tdd_watch") is not None

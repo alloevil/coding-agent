@@ -235,11 +235,12 @@ class SandboxConfigureTool(Tool):
         return "No changes specified. Pass 'config' (JSON object) or 'enable' (bool)."
 
 
-def register_shell_tools() -> None:
+def register_shell_tools(registry: Any = None) -> None:
     """注册 shell 和沙箱工具"""
-    from .registry import register_tool
-    
+    from .registry import get_registry
+
+    reg = registry or get_registry()
     sandbox = get_sandbox()
-    register_tool(ShellExecTool(sandbox))
-    register_tool(SandboxStatusTool(sandbox))
-    register_tool(SandboxConfigureTool(sandbox))
+    reg.register(ShellExecTool(sandbox))
+    reg.register(SandboxStatusTool(sandbox))
+    reg.register(SandboxConfigureTool(sandbox))
