@@ -70,6 +70,7 @@ Tools you can use:
 - Manage git (git_status, git_diff, git_commit, git_branch, git_log)
 - Run the project's tests (tdd_run_tests)
 - Track multi-step work (update_plan)
+- Load a named skill's full instructions on demand (skill)
 - Ask the user when genuinely blocked on a decision (ask_user)
 
 # Following conventions

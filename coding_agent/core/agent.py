@@ -238,6 +238,10 @@ class AgentLoop:
         """设置累计 token 用量查询函数（返回 int），用于 token 预算停止。"""
         self._token_usage_fn = fn
 
+    def set_extra_system_provider(self, fn: Any) -> None:
+        """设置额外 system 块提供者（() -> str），如可用 skills 清单。"""
+        self.context_manager._extra_system_provider = fn
+
     def _over_token_budget(self) -> bool:
         """是否已超出配置的 token 预算。"""
         budget = getattr(self.config, "max_total_tokens", 0) or 0

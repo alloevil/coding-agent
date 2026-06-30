@@ -56,12 +56,15 @@ class CodingAgent:
         from .tools.memory_ops import register_memory_tools
         from .tools.web_ops import register_web_tools
         from .tools.ask_ops import register_ask_tools
+        from .tools.skill_ops import register_skill_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
         register_memory_tools()
         register_web_tools()
         self.ask_tool = register_ask_tools(handler=self._ask_user)
+        # Skills：注册 skill 工具（渐进式披露的"展开"半步）
+        self.skill_tool = register_skill_tools()
 
         # 配置驱动的命令 hook（settings.json 风格）
         if getattr(self.config, "hooks", None):
@@ -100,6 +103,13 @@ class CodingAgent:
         
         # 设置权限确认回调
         self.agent_loop.set_permission_handler(self._confirm_permission)
+
+        # Skills：把"可用 skills 清单"作为额外 system 块按需注入（渐进式披露）。
+        # 用函数延迟求值，使新增/改动 skill 后无需重启即可生效。
+        from .core.skills import discover_skills, render_available_skills
+        self.agent_loop.set_extra_system_provider(
+            lambda: render_available_skills(discover_skills())
+        )
         
         # 当前状态
         self.state: AgentState | None = None

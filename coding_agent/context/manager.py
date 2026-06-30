@@ -24,13 +24,17 @@ class ContextManager:
     - 在 context 过长时进行压缩
     """
     
-    def __init__(self, max_tokens: int = 200000, load_project_context: bool = True):
+    def __init__(self, max_tokens: int = 200000, load_project_context: bool = True,
+                 extra_system_provider: Any = None):
         self.max_tokens = max_tokens
         self.compression_threshold = 0.9  # 90% 时触发压缩
         self._load_project_context = load_project_context
         # 项目上下文只加载一次并缓存（会话生命周期内通常不变）
         self._project_context_cache: str | None = None
         self._project_ctx_touched_count: int = -1
+        # 可选：额外 system 块提供者（() -> str），如可用 skills 清单。
+        # 解耦：context manager 不直接依赖 skills 模块。
+        self._extra_system_provider = extra_system_provider
 
     def _get_project_context(self) -> str:
         """加载（并缓存）AGENTS.md/CLAUDE.md 项目上下文。
@@ -75,6 +79,16 @@ class ContextManager:
                 "role": "system",
                 "content": project_ctx
             })
+
+        # 2b. 额外 system 块（如可用 skills 清单）——渐进式披露：只注入
+        #     name+description，完整指令由模型按需通过 skill 工具加载。
+        if self._extra_system_provider is not None:
+            try:
+                extra = self._extra_system_provider()
+            except Exception:
+                extra = ""
+            if extra:
+                messages.append({"role": "system", "content": extra})
 
         # 3. 添加会话历史
         for msg in state.messages:
