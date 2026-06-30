@@ -82,6 +82,33 @@ def _syntax_warning(path: str, content: str) -> str:
         )
 
 
+def _make_diff(old: str, new: str, path: str, max_lines: int = 80) -> str:
+    """
+    生成一段 unified diff 后缀，让模型/用户看到本次改动的实际效果。
+
+    参考 Claude Code / opencode：编辑成功后回显 diff，避免"我以为改对了"。
+    超过 max_lines 行时截断，避免大改动淹没上下文。无变化返回空串。
+    """
+    import difflib
+
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
+    ))
+    if not diff:
+        return ""
+    truncated = False
+    if len(diff) > max_lines:
+        diff = diff[:max_lines]
+        truncated = True
+    body = "\n".join(diff)
+    if truncated:
+        body += f"\n... (diff truncated at {max_lines} lines)"
+    return "\n\n```diff\n" + body + "\n```"
+
+
 def _is_ignored(path: Path, ignore_dirs: frozenset[str]) -> bool:
     """路径中是否包含任一被忽略的目录名。"""
     return any(part in ignore_dirs for part in path.parts)
@@ -245,12 +272,25 @@ class FileWriteTool(Tool):
         
         try:
             file_path = Path(path)
+            # 覆盖已有文件时，记录旧内容以生成 diff
+            old_content = ""
+            existed = file_path.is_file()
+            if existed:
+                try:
+                    old_content = file_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    old_content = ""
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            
-            return f"Successfully wrote {len(content)} bytes to '{path}'" + _syntax_warning(path, content)
+
+            msg = f"Successfully wrote {len(content)} bytes to '{path}'"
+            msg += _syntax_warning(path, content)
+            # 覆盖写时回显 diff（新建文件不显示，避免整文件刷屏）
+            if existed:
+                msg += _make_diff(old_content, content, path)
+            return msg
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -346,7 +386,8 @@ class FileEditTool(Tool):
             _record_read(path)  # 编辑后刷新追踪基线
             suffix = " (replace_all)" if replace_all else ""
             return (f"Successfully edited '{path}'{suffix}"
-                    + _syntax_warning(path, new_content) + stale)
+                    + _syntax_warning(path, new_content) + stale
+                    + _make_diff(content, new_content, path))
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
