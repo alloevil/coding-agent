@@ -199,7 +199,7 @@ class CodingAgent:
         print(f"   Auto-approve: {'ON' if self.config.auto_approve else 'OFF'}")
         print(f"   Tools: {len(self.tool_registry.get_all_tools())}")
         print()
-        print("Commands: quit, new, sessions, help")
+        print("Commands: /help /tools /cost /compact /new /sessions /quit")
         print("=" * 50)
         
         # 交互循环
@@ -212,47 +212,85 @@ class CodingAgent:
             
             if not user_input:
                 continue
-            
-            if user_input.lower() == "quit":
-                print("Goodbye!")
-                break
-            
-            if user_input.lower() == "new":
-                self.state = AgentState(
-                    session_id=self.session_store.create_session()
+
+            # Slash 命令（/help /tools /cost /compact /new ... + 自定义命令）
+            from .core.commands import is_command, dispatch, CommandContext
+            # 兼容旧的裸词命令
+            if user_input.lower() in ("quit", "exit"):
+                user_input = "/quit"
+            elif user_input.lower() == "new":
+                user_input = "/new"
+            elif user_input.lower() == "sessions":
+                user_input = "/sessions"
+            elif user_input.lower() == "help":
+                user_input = "/help"
+
+            if is_command(user_input):
+                mc = self.model_client
+                ctx = CommandContext(
+                    tool_names=[t.name for t in self.tool_registry.get_all_tools()],
+                    total_prompt_tokens=mc.total_prompt_tokens,
+                    total_completion_tokens=mc.total_completion_tokens,
+                    total_reasoning_tokens=mc.total_reasoning_tokens,
+                    cache_hit_rate=mc.cache_hit_rate,
+                    session_id=self.state.session_id if self.state else None,
+                    turn_count=self.state.turn_count if self.state else 0,
                 )
+                result = dispatch(user_input, ctx)
+                handled = await self._handle_command_result(result)
+                if handled == "quit":
+                    break
+                if handled == "continue":
+                    continue
+                # result.kind == "prompt" -> 落到下面作为用户消息运行
+                user_input = result.payload
+
+            # 运行 Agent
+            print()
+
+            async for event in self.agent_loop.run(self.state, user_input):
+                await self._handle_event(event)
+
+    async def _handle_command_result(self, result) -> str:
+        """处理 slash 命令结果。返回 'quit'/'continue'/'run'。"""
+        if result.kind == "print":
+            print(result.payload)
+            return "continue"
+        if result.kind == "action":
+            act = result.payload
+            if act == "quit":
+                print("Goodbye!")
+                return "quit"
+            if act == "new":
+                self.state = AgentState(session_id=self.session_store.create_session())
                 self.plan_tool.bind_state(self.state)
                 self.model_client.prompt_cache_key = self.state.session_id
                 print("✨ Started new session")
-                continue
-            
-            if user_input.lower() == "sessions":
+                return "continue"
+            if act == "sessions":
                 sessions = self.session_store.list_sessions()
                 print("\n📋 Recent sessions:")
                 for s in sessions[:5]:
                     print(f"   {s['id'][:8]}... ({s['updated_at']})")
-                continue
-            
-            if user_input.lower() == "help":
-                print("""
-Commands:
-  quit      - Exit the agent
-  new       - Start a new session
-  sessions  - List recent sessions
-  help      - Show this help
+                return "continue"
+            if act == "plan":
+                plan = (self.state.metadata.get("plan") if self.state else None)
+                if plan:
+                    from .tools.plan_ops import render_plan
+                    print(render_plan(plan))
+                else:
+                    print("No plan set yet.")
+                return "continue"
+            if act == "compact":
+                if self.state:
+                    await self.agent_loop.context_manager.compact(
+                        self.state, self.agent_loop._model_call_fn)
+                    print("📦 Compacted.")
+                return "continue"
+            return "continue"
+        # "prompt" -> 让调用方把 payload 作为用户消息运行
+        return "run"
 
-Permissions:
-  y/yes     - Allow this tool call
-  n/no      - Deny this tool call
-  a/all     - Allow all tool calls this session
-""")
-                continue
-            
-            # 运行 Agent
-            print()
-            
-            async for event in self.agent_loop.run(self.state, user_input):
-                await self._handle_event(event)
     
     async def _handle_event(self, event: AgentEventData) -> None:
         """处理 Agent 事件"""
