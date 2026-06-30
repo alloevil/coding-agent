@@ -36,8 +36,8 @@ async def test_edit_ambiguous_reports_lines(tmp_path):
     f = tmp_path / "c.py"
     f.write_text("x = 1\ny = 1\nx = 1\n")
     out = await FileEditTool().execute(path=str(f), old_text="x = 1", new_text="x = 2")
-    assert "found 2 times" in out
-    assert "replace_all" in out
+    assert "multiple matches" in out
+    assert "near lines" in out
 
 
 @pytest.mark.asyncio
@@ -46,7 +46,7 @@ async def test_edit_replace_all(tmp_path):
     f.write_text("a = 1\na = 1\n")
     out = await FileEditTool().execute(path=str(f), old_text="a = 1",
                                        new_text="a = 2", replace_all=True)
-    assert "2 occurrences" in out
+    assert "Successfully edited" in out
     assert f.read_text() == "a = 2\na = 2\n"
 
 

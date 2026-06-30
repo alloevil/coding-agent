@@ -285,32 +285,25 @@ class FileEditTool(Tool):
 
             content = file_path.read_text(encoding="utf-8")
 
-            count = content.count(old_text)
-            if count == 0:
-                return f"Error: old_text not found in '{path}'"
-            if count > 1 and not replace_all:
-                # 给出每个匹配所在行号，帮助模型消歧
-                line_nums = []
-                idx = 0
-                for ln, line in enumerate(content.splitlines(), 1):
-                    if old_text.splitlines()[0] in line:
-                        line_nums.append(ln)
-                hint = f" (matches near lines {line_nums[:10]})" if line_nums else ""
-                return (
-                    f"Error: old_text found {count} times in '{path}', must be unique. "
-                    f"Add more surrounding context, or pass replace_all=true to replace "
-                    f"all occurrences.{hint}"
-                )
+            # 多策略匹配：精确 → 行级 strip → 空白归一 → 缩进无关 → 块锚点。
+            # 比精确匹配更鲁棒（容忍空白/缩进漂移），同时保持唯一性约束。
+            from ..core.text_replace import fuzzy_replace, ReplaceError
+            try:
+                new_content = fuzzy_replace(content, old_text, new_text, replace_all=replace_all)
+            except ReplaceError as e:
+                msg = str(e)
+                # 多处匹配时附带行号提示，帮助模型消歧
+                if "multiple matches" in msg:
+                    first = old_text.splitlines()[0] if old_text.splitlines() else old_text
+                    line_nums = [ln for ln, line in enumerate(content.splitlines(), 1)
+                                 if first.strip() and first.strip() in line]
+                    hint = f" (near lines {line_nums[:10]})" if line_nums else ""
+                    return f"Error: {msg}{hint}"
+                return f"Error: {msg}"
 
-            if replace_all:
-                new_content = content.replace(old_text, new_text)
-                file_path.write_text(new_content, encoding="utf-8")
-                return (f"Successfully edited '{path}' ({count} occurrences replaced)"
-                        + _syntax_warning(path, new_content))
-
-            new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
-            return f"Successfully edited '{path}'" + _syntax_warning(path, new_content)
+            suffix = " (replace_all)" if replace_all else ""
+            return f"Successfully edited '{path}'{suffix}" + _syntax_warning(path, new_content)
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
