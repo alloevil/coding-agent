@@ -113,26 +113,39 @@ class CodingAgent:
         
         # 当前状态
         self.state: AgentState | None = None
-    
+
+        # 流式增量回调（可被前端覆盖）。默认 None → _call_model 用 print。
+        # TUI 把它们重定向到 live 缓冲，避免 print 打断 rich.Live 重绘。
+        self.on_text_delta: Any = None
+        self.on_reasoning_delta: Any = None
+
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """
         调用模型（支持流式输出）。
 
-        委托给统一的 ModelClient；流式文本通过回调直接打印到终端。
+        委托给统一的 ModelClient；流式文本通过回调输出。默认打印到终端；
+        前端（如 TUI）可通过 self.on_text_delta / on_reasoning_delta 重定向。
         支持 OpenAI 兼容 API（包括小米 mify）。
         """
-        on_delta = (lambda chunk: print(chunk, end="", flush=True)) if self.config.stream else None
-        # 推理增量用暗色前缀打印，和正文区分
-        on_reasoning = (
-            (lambda chunk: print(f"\033[2m{chunk}\033[0m", end="", flush=True))
-            if self.config.stream else None
-        )
+        if self.on_text_delta is not None:
+            on_delta = self.on_text_delta
+        elif self.config.stream:
+            on_delta = lambda chunk: print(chunk, end="", flush=True)
+        else:
+            on_delta = None
+        # 推理增量：前端覆盖优先；否则流式时用暗色前缀打印，和正文区分
+        if self.on_reasoning_delta is not None:
+            on_reasoning = self.on_reasoning_delta
+        elif self.config.stream:
+            on_reasoning = lambda chunk: print(f"\033[2m{chunk}\033[0m", end="", flush=True)
+        else:
+            on_reasoning = None
         return await self.model_client.complete(
             context,
             tools,
             on_text_delta=on_delta,
             on_reasoning_delta=on_reasoning,
-            stream=self.config.stream,
+            stream=self.config.stream or self.on_text_delta is not None,
         )
 
     async def _ask_user(self, question: str, options: list[str]) -> str:

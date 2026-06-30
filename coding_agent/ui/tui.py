@@ -60,15 +60,34 @@ class TuiState:
     completion_tokens: int = 0
     reasoning_tokens: int = 0
     cache_hit_rate: float = 0.0
-    status: str = "idle"   # idle | thinking | running_tool
+    status: str = "idle"   # idle | thinking | running_tool | error | compacting | retrying | done
+    # 流式缓冲：增量先进这里实时显示，助手消息完成时提交为正式消息。
+    live_text: str = ""
+    live_reasoning: str = ""
+    # 最近一条瞬时提示（错误/压缩/重试），显示在 footer 上方。
+    notice: str = ""
+    title: str = ""
+    plan_mode: bool = False
 
     # ---- 事件应用 ----
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "text": text})
 
+    def stream_text(self, chunk: str) -> None:
+        """累积流式正文增量。"""
+        self.live_text += chunk
+
+    def stream_reasoning(self, chunk: str) -> None:
+        """累积流式推理增量。"""
+        self.live_reasoning += chunk
+
     def add_assistant(self, text: str) -> None:
-        if text:
-            self.messages.append({"role": "assistant", "text": text})
+        # 助手消息落定：优先用最终文本，否则用流式缓冲；随后清空缓冲。
+        final = text or self.live_text
+        if final:
+            self.messages.append({"role": "assistant", "text": final})
+        self.live_text = ""
+        self.live_reasoning = ""
 
     def start_tool(self, id: str, name: str, arguments: dict[str, Any]) -> None:
         self.tool_calls.append(ToolCallView(id=id, name=name, arguments=arguments))
@@ -88,7 +107,17 @@ def _short(s: str, n: int = 60) -> str:
 
 def build_header(state: TuiState) -> str:
     sid = (state.session_id or "")[:8]
-    return f"🤖 coding-agent  ·  {state.model}  ·  session {sid}  ·  turn {state.turn}"
+    parts = [f"🤖 coding-agent", state.model, f"session {sid}", f"turn {state.turn}"]
+    if state.title:
+        parts.insert(1, state.title)
+    if state.plan_mode:
+        parts.append("🧭 plan-mode")
+    return "  ·  ".join(parts)
+
+
+def build_notice(state: TuiState) -> str:
+    """瞬时提示（错误/压缩/重试）；无则空串。"""
+    return state.notice
 
 
 def build_plan_panel(state: TuiState) -> str:
@@ -112,15 +141,22 @@ def build_footer(state: TuiState) -> str:
     cache = (f" · cache {state.cache_hit_rate*100:.0f}%"
              if state.prompt_tokens else "")
     status = {"idle": "ready", "thinking": "thinking…",
-              "running_tool": "running tool…"}.get(state.status, state.status)
+              "running_tool": "running tool…", "error": "error",
+              "compacting": "compacting…", "retrying": "retrying…",
+              "done": "done"}.get(state.status, state.status)
     return (f"[{status}]  {state.prompt_tokens} in / "
             f"{state.completion_tokens} out{r}{cache}")
 
 
 def build_transcript(state: TuiState, max_messages: int = 12) -> str:
-    """把最近若干条消息渲染成文本（纯函数，便于测试）。"""
+    """把最近若干条消息渲染成文本（纯函数，便于测试）。
+
+    若有正在流式输出的 live_text，作为最后一条进行中的 Agent 行追加显示。
+    """
     lines = []
     for m in state.messages[-max_messages:]:
         prefix = "You: " if m["role"] == "user" else "Agent: "
         lines.append(prefix + m["text"])
+    if state.live_text:
+        lines.append("Agent: " + state.live_text + " ▌")
     return "\n\n".join(lines)
