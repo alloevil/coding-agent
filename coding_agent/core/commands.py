@@ -173,12 +173,17 @@ def _cmd_init(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("prompt", _render_init_prompt(facts))
 
 
+def _cmd_plan_mode(args: str, ctx: CommandContext) -> CommandResult:
+    return CommandResult("action", "plan_mode")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
     "cost": _cmd_cost,
     "compact": _cmd_compact,
     "plan": _cmd_plan,
+    "plan-mode": _cmd_plan_mode,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,

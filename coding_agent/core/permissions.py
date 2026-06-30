@@ -86,9 +86,24 @@ class PermissionPolicy:
     deny_rules: list[Rule] = field(default_factory=list)
     auto_approve: bool = False
     deny_read_paths: list[str] = field(default_factory=lambda: list(DEFAULT_DENY_READ_PATHS))
+    # 只读规划模式：只允许 READ 工具 + 下面这些"无副作用交互"工具
+    plan_mode: bool = False
+    plan_mode_allow: list[str] = field(default_factory=lambda: ["update_plan", "ask_user"])
 
     def decide(self, tool_name: str, arguments: dict[str, Any],
                permission: ToolPermission) -> Decision:
+        # 0. 规划模式：deny 任何会改变系统的工具（WRITE/EXECUTE/DANGEROUS），
+        #    放行 READ 与白名单（update_plan / ask_user）。优先级仅次于敏感读取拦截。
+        if self.plan_mode:
+            cand = [str(arguments[k]) for k in _PATH_KEYS if k in arguments and arguments[k]]
+            for p in cand:
+                for pat in self.deny_read_paths:
+                    if _path_matches(p, pat):
+                        return Decision.DENY
+            if tool_name in self.plan_mode_allow or permission == ToolPermission.READ:
+                return Decision.ALLOW
+            return Decision.DENY
+
         # 1. 内置敏感读取拦截（deny-first）
         cand = [str(arguments[k]) for k in _PATH_KEYS if k in arguments and arguments[k]]
         for p in cand:

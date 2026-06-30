@@ -317,6 +317,12 @@ class CodingAgent:
                         self.state, self.agent_loop._model_call_fn)
                     print("📦 Compacted.")
                 return "continue"
+            if act == "plan_mode":
+                pol = self.agent_loop.permission_policy
+                pol.plan_mode = not pol.plan_mode
+                print("🧭 Plan mode " + ("ON — read-only; the agent can explore and "
+                      "plan but won't edit/run." if pol.plan_mode else "OFF — edits allowed again."))
+                return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
