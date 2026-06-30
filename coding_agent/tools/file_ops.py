@@ -29,6 +29,27 @@ DEFAULT_IGNORE_DIRS = frozenset({
 })
 
 
+def _syntax_warning(path: str, content: str) -> str:
+    """
+    对刚写入的文件做尽力而为的语法校验，返回一段警告后缀（无问题则空串）。
+
+    当前支持 Python（ast.parse）。设计为非阻塞：写入照常完成，只是在
+    引入语法错误时附加提示，让模型有机会立刻修复，而不是等运行时才发现。
+    """
+    if not path.endswith(".py"):
+        return ""
+    import ast
+    try:
+        ast.parse(content)
+        return ""
+    except SyntaxError as e:
+        return (
+            f"\n⚠️ Warning: '{path}' has a Python syntax error after this write "
+            f"(line {e.lineno}: {e.msg}). The write succeeded, but you likely "
+            f"need to fix it."
+        )
+
+
 def _is_ignored(path: Path, ignore_dirs: frozenset[str]) -> bool:
     """路径中是否包含任一被忽略的目录名。"""
     return any(part in ignore_dirs for part in path.parts)
@@ -191,7 +212,7 @@ class FileWriteTool(Tool):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
             
-            return f"Successfully wrote {len(content)} bytes to '{path}'"
+            return f"Successfully wrote {len(content)} bytes to '{path}'" + _syntax_warning(path, content)
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -284,11 +305,12 @@ class FileEditTool(Tool):
             if replace_all:
                 new_content = content.replace(old_text, new_text)
                 file_path.write_text(new_content, encoding="utf-8")
-                return f"Successfully edited '{path}' ({count} occurrences replaced)"
+                return (f"Successfully edited '{path}' ({count} occurrences replaced)"
+                        + _syntax_warning(path, new_content))
 
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
-            return f"Successfully edited '{path}'"
+            return f"Successfully edited '{path}'" + _syntax_warning(path, new_content)
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
