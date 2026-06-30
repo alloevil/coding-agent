@@ -93,6 +93,7 @@ class CodingAgent:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             extra_headers=self.config.extra_headers,
+            protocol=getattr(self.config, "protocol", "openai"),
         )
         
         # 初始化 Agent Loop
@@ -457,6 +458,8 @@ class CodingAgent:
                 self.model_client.base_url = base_url
             if p.get("extra_headers") is not None:
                 self.model_client.extra_headers = p["extra_headers"]
+            if p.get("protocol"):
+                self.model_client.protocol = p["protocol"]
             new_model = model_in_spec or p.get("model") or self.config.model
             self.config.model = new_model
             self.model_client.model = new_model

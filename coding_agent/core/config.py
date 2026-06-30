@@ -36,6 +36,8 @@ class AgentConfig:
     max_tokens: int = 4096
     temperature: float | None = 0.7  # None 时省略该字段（GPT-5 等只接受默认温度）
     extra_headers: dict[str, str] = field(default_factory=dict)  # 网关自定义 header
+    # 后端协议：openai（/chat/completions）或 anthropic（/v1/messages）
+    protocol: str = "openai"
     
     # Context 配置
     max_context_tokens: int = 200000
