@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (502 tests passing). Compares our `coding-agent` against:
+Status snapshot (520 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -13,7 +13,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 |---|---|---|---|
 | Read file (paginated) | ✅ `file_read` (2k pages, binary/size guard) | ✅ Read | ✅ read |
 | Write file | ✅ `file_write` (+syntax warn) | ✅ Write | ✅ write |
-| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies) | ✅ Edit | ✅ edit (9 strategies) |
+| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies, returns diff) | ✅ Edit | ✅ edit (9 strategies) |
 | Multi-file atomic patch | ✅ `apply_patch` | 🟡 (MultiEdit) | ✅ apply-patch |
 | Glob / file search | ✅ `file_search` (gitignore-aware) | ✅ Glob | ✅ glob |
 | Grep | ✅ `grep` (gitignore-aware) | ✅ Grep | ✅ grep |
@@ -69,8 +69,16 @@ check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested 
 `git_branch` ✅, production system prompt ✅, **Skills ✅** (progressive disclosure).
 
 **Remaining (offline-verifiable):**
-- (none high-value left — Skills, session titles, plan mode, git_branch all
-  shipped; offline backlog vs Claude Code/opencode essentially exhausted.)
+- (none high-value left — Skills, session titles, plan mode, git_branch, TUI,
+  edit-diff, real tokenizer, per-tool timeout all shipped.)
+
+**Depth/quality follow-ups (lower value, deferred):**
+- `.gitignore` not truly parsed — only a fixed `DEFAULT_IGNORE_DIRS` set; the
+  Python search fallback ignores a project's custom `.gitignore` (ripgrep path
+  does honor it). Could add `pathspec` or a simple `.gitignore` line matcher.
+- Post-write syntax check is Python-only (`ast.parse`); JSON/YAML are zero-dep
+  additions.
+- `MAX_SPAWN_DEPTH=1` is hardcoded; could be config-driven.
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
