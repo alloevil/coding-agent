@@ -78,6 +78,10 @@ class AgentProtocol:
         
         # 设置模型调用
         self.agent_loop.set_model_call_fn(self._call_model)
+        self.agent_loop.set_token_usage_fn(
+            lambda: self.model_client.total_prompt_tokens
+            + self.model_client.total_completion_tokens
+        )
         
         # 设置权限确认
         self.agent_loop.set_permission_handler(self._confirm_permission)

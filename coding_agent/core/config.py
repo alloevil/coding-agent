@@ -45,6 +45,8 @@ class AgentConfig:
     auto_approve: bool = False
     max_turns: int = 100
     stream: bool = True  # 是否流式输出
+    # 累计 token 预算（输入+输出+推理）；<=0 表示不限制。超出后停止本轮循环。
+    max_total_tokens: int = 0
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}

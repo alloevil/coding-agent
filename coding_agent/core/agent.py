@@ -196,6 +196,9 @@ class AgentLoop:
         # 模型调用函数（需要外部注入）
         self._model_call_fn: Any = None
 
+        # 累计 token 用量查询（可选；返回 int）。用于 token 预算停止。
+        self._token_usage_fn: Any = None
+
         # 权限确认回调
         self._permission_handler: PermissionHandler | None = None
 
@@ -230,6 +233,20 @@ class AgentLoop:
     def set_model_call_fn(self, fn: Any) -> None:
         """设置模型调用函数"""
         self._model_call_fn = fn
+
+    def set_token_usage_fn(self, fn: Any) -> None:
+        """设置累计 token 用量查询函数（返回 int），用于 token 预算停止。"""
+        self._token_usage_fn = fn
+
+    def _over_token_budget(self) -> bool:
+        """是否已超出配置的 token 预算。"""
+        budget = getattr(self.config, "max_total_tokens", 0) or 0
+        if budget <= 0 or self._token_usage_fn is None:
+            return False
+        try:
+            return self._token_usage_fn() >= budget
+        except Exception:
+            return False
     
     def set_permission_handler(self, handler: PermissionHandler) -> None:
         """设置权限确认回调"""
@@ -255,6 +272,13 @@ class AgentLoop:
         
         # 2. 主循环
         while not state.should_stop():
+            # token 预算停止：超出则结束本轮，避免成本失控
+            if self._over_token_budget():
+                yield AgentEventData(
+                    event=AgentEvent.DONE,
+                    data={"turns": state.turn_count, "reason": "token_budget_exceeded"},
+                )
+                break
             state.increment_turn()
             
             # 3. Context assembly
