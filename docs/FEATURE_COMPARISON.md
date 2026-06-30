@@ -22,7 +22,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Web search | 🟡 `web_search` (DDG, not live-verified) | ✅ WebSearch | ✅ websearch |
 | Plan / todo | ✅ `update_plan` (re-injected) | ✅ TodoWrite | ✅ todowrite + plan |
 | Subagents | ✅ `agent_spawn`/`agent_parallel` | ✅ Task | ✅ task |
-| Ask-user / question | ❌ | ✅ (AskUserQuestion) | ✅ question |
+| Ask-user / question | ✅ `ask_user` | ✅ (AskUserQuestion) | ✅ question |
 | Memory | ✅ `memory_*` (SQLite/project) | ✅ (CLAUDE.md + memory) | 🟡 |
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
 | LSP (real language servers) | 🟡 `lsp_*` (not started by default) | ✅ (diagnostics) | ✅ full LSP client |
@@ -52,28 +52,28 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 
 | Capability | coding-agent | Claude Code | opencode |
 |---|---|---|---|
-| Slash commands | ❌ | ✅ (`/init` etc + custom) | ✅ (custom templated) |
+| Slash commands | ✅ (built-in + custom) | ✅ (`/init` etc + custom) | ✅ (custom templated) |
 | Hooks (lifecycle) | 🟡 (enum exists; only PRE/POST_TOOL fire; no config) | ✅ (settings.json hooks) | ✅ (plugins) |
-| Config file load | 🟡 (`from_file` unused) | ✅ (settings.json) | ✅ (opencode.json) |
+| Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
 | TUI | ❌ (CLI + Go protocol) | ✅ | ✅ (rich TUI) |
 | Session resume (`--resume`) | 🟡 (load_state, no CLI flag) | ✅ | ✅ |
 | Multimodal (images) | ❌ | ✅ | ✅ |
-| Cost/token budget stop | ❌ (only max_turns) | ✅ | 🟡 |
+| Cost/token budget stop | ✅ (max_total_tokens) | ✅ | 🟡 |
 
-## Prioritized backlog (next, all offline-verifiable)
+## Prioritized backlog
 
-1. **Slash command system** — `/init`, `/compact`, `/cost`, custom commands from a
-   commands dir. opencode templates these; Claude Code documents the model. HIGH.
-2. **Hooks config-ization** — wire PRE/POST_MODEL_CALL + ON_COMPACT, load hook
-   config from settings, so users can register automation. MED.
-3. **`ask_user` / question tool** — both peers have it; lets the agent ask a
-   structured question instead of guessing. MED.
-4. **Config file load** — actually call `AgentConfig.from_file` from
-   `~/.config/coding-agent/config.json` + project `.coding-agent.json`. MED.
-5. **Session resume UX** — `coding-agent --resume <id>` / list+pick. MED.
-6. **Cost/token budget** — stop when a token budget is exceeded (we track usage
-   already; just need the gate). MED.
-7. **LSP auto-start** — tools exist but no language server is launched by default. LOW.
-8. **Multimodal image input** — needs vision-capable endpoint. LOW (blocked on endpoint).
-9. **More edit strategies** — opencode has 9 (escape-normalized, trimmed-boundary,
-   context-aware, multi-occurrence); we have 5. LOW (diminishing returns).
+**Done since first matrix:** slash commands ✅, config-file load ✅, token budget ✅,
+ask_user ✅, fuzzy edit ✅, persistent shell cwd ✅, post-edit syntax check ✅.
+
+**Remaining (offline-verifiable):**
+1. **Hooks config-ization** — wire PRE/POST_MODEL_CALL + ON_COMPACT, load hook
+   config from settings so users can register automation. MED.
+2. **Session resume UX** — `coding-agent --resume <id>` / list+pick. MED.
+3. **LSP auto-start** — tools exist but no language server is launched by default. LOW.
+4. **More edit strategies** — opencode has 9; we have 5 (escape-normalized,
+   trimmed-boundary, context-aware, multi-occurrence). LOW (diminishing returns).
+5. **`/init` command** — generate an AGENTS.md by scanning the repo. MED.
+
+**Blocked on endpoint (can't verify here):**
+- Multimodal image input (needs a vision endpoint).
+- Anthropic-native backend (mimorouter group unreachable with this token).
