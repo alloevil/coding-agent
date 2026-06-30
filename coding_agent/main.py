@@ -130,6 +130,10 @@ class CodingAgent:
         # 当前状态
         self.state: AgentState | None = None
 
+        # 会话状态跟踪器（结构化进度广播，供 /status 与外部订阅者）
+        from .core.session_status import SessionStatusTracker
+        self.status_tracker = SessionStatusTracker()
+
         # 流式增量回调（可被前端覆盖）。默认 None → _call_model 用 print。
         # TUI 把它们重定向到 live 缓冲，避免 print 打断 rich.Live 重绘。
         self.on_text_delta: Any = None
@@ -263,6 +267,8 @@ class CodingAgent:
         self.model_client.prompt_cache_key = self.state.session_id
         # 记录模型名，供 token 估算选对 tokenizer
         self.state.metadata["model"] = self.config.model
+        # 会话状态跟踪器绑定 session_id
+        self.status_tracker.status.session_id = self.state.session_id
 
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")
@@ -399,6 +405,12 @@ class CodingAgent:
             if act.startswith("model:"):
                 self._switch_model(act.split(":", 1)[1])
                 return "continue"
+            if act == "status":
+                mc = self.model_client
+                self.status_tracker.set_usage(mc.total_prompt_tokens,
+                                              mc.total_completion_tokens)
+                print("📊 " + self.status_tracker.render())
+                return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
@@ -477,6 +489,9 @@ class CodingAgent:
     
     async def _handle_event(self, event: AgentEventData) -> None:
         """处理 Agent 事件"""
+        # 推进结构化会话状态（供 /status 与订阅者）
+        self.status_tracker.update_from_event(event.event.value, event.data)
+
         if event.event == AgentEvent.THINKING:
             print(f"\n💭 Turn {event.data['turn']} - ", end="", flush=True)
         

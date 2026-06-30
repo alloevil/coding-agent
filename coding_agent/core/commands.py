@@ -200,6 +200,11 @@ def _cmd_model(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", f"model:{spec}")
 
 
+def _cmd_status(args: str, ctx: CommandContext) -> CommandResult:
+    """显示当前会话的结构化运行状态。"""
+    return CommandResult("action", "status")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -210,6 +215,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "agents": _cmd_agents,
     "agent": _cmd_agent,
     "model": _cmd_model,
+    "status": _cmd_status,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,
