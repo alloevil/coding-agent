@@ -377,9 +377,41 @@ class CodingAgent:
                 print("🧭 Plan mode " + ("ON — read-only; the agent can explore and "
                       "plan but won't edit/run." if pol.plan_mode else "OFF — edits allowed again."))
                 return "continue"
+            if act.startswith("agent:"):
+                self._switch_agent(act.split(":", 1)[1])
+                return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
+
+    def _switch_agent(self, name: str) -> None:
+        """切换当前主会话的活动 agent profile：应用其 prompt/model/工具过滤。"""
+        from .core.agent_profiles import load_agent
+        profile = load_agent(name)
+        if profile is None:
+            print(f"Agent '{name}' not found. See /agents. "
+                  f"Define one at .coding-agent/agents/{name}.md")
+            return
+        # 应用 system prompt / 模型 / 工具过滤
+        if profile.system_prompt:
+            self.agent_loop.config.system_prompt = profile.system_prompt
+        if profile.model:
+            self.config.model = profile.model
+            self.model_client.model = profile.model
+        if profile.temperature is not None:
+            self.model_client.temperature = profile.temperature
+        if profile.allow_tools or profile.deny_tools:
+            self.agent_loop.set_tool_filter(profile.tool_allowed)
+        else:
+            self.agent_loop.set_tool_filter(None)
+        # 记录活动 agent，供切换交接提醒使用
+        prev = (self.state.metadata or {}).get("active_agent") if self.state else None
+        if self.state:
+            self.state.metadata["active_agent"] = name
+            self.state.metadata["prev_agent"] = prev
+        print(f"🧩 Switched to agent '{name}'"
+              + (f" ({profile.model})" if profile.model else "")
+              + (f" — {profile.description}" if profile.description else ""))
 
     
     async def _handle_event(self, event: AgentEventData) -> None:

@@ -42,6 +42,14 @@ if TYPE_CHECKING:
     from ..memory.session import SessionStore
 
 
+def _tool_fn_name(tool_def: dict) -> str:
+    """从 OpenAI function 工具定义里取工具名（{'type':'function','function':{'name':..}}）。"""
+    fn = tool_def.get("function") if isinstance(tool_def, dict) else None
+    if isinstance(fn, dict):
+        return fn.get("name", "")
+    return tool_def.get("name", "") if isinstance(tool_def, dict) else ""
+
+
 # ---------------------------------------------------------------------------
 # 错误分类
 # ---------------------------------------------------------------------------
@@ -196,6 +204,10 @@ class AgentLoop:
         # 模型调用函数（需要外部注入）
         self._model_call_fn: Any = None
 
+        # 可选的工具过滤器：(tool_name) -> bool。用于按 agent profile 限制
+        # 该（子）代理能看到/调用的工具集。None 表示不限制。
+        self._tool_filter: Any = None
+
         # 累计 token 用量查询（可选；返回 int）。用于 token 预算停止。
         self._token_usage_fn: Any = None
 
@@ -241,6 +253,10 @@ class AgentLoop:
     def set_extra_system_provider(self, fn: Any) -> None:
         """设置额外 system 块提供者（() -> str），如可用 skills 清单。"""
         self.context_manager._extra_system_provider = fn
+
+    def set_tool_filter(self, fn: Any) -> None:
+        """设置工具过滤器 (tool_name)->bool（如 agent profile 的 allow/deny）。"""
+        self._tool_filter = fn
 
     def _over_token_budget(self) -> bool:
         """是否已超出配置的 token 预算。"""
@@ -416,6 +432,11 @@ class AgentLoop:
         if not tool:
             result = f"Error: Tool '{tool_call.name}' not found"
             is_error = True
+        elif self._tool_filter is not None and not self._tool_filter(tool_call.name):
+            # agent profile 工具过滤：模型仍调用了被禁工具 → 拒绝
+            result = (f"Tool '{tool_call.name}' is not available to this agent "
+                      f"(restricted by its profile).")
+            is_error = True
         else:
             decision = self.permission_policy.decide(
                 tool_call.name, tool_call.arguments, tool.permission
@@ -509,6 +530,9 @@ class AgentLoop:
 
         # 获取工具定义
         tools = self.tool_registry.get_openai_functions()
+        # 按 agent profile 的工具过滤器裁剪模型可见的工具集
+        if self._tool_filter is not None:
+            tools = [t for t in tools if self._tool_filter(_tool_fn_name(t))]
 
         # PRE_MODEL_CALL hook
         from ..tools.base import HookEvent, HookContext

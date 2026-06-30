@@ -177,6 +177,21 @@ def _cmd_plan_mode(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", "plan_mode")
 
 
+def _cmd_agents(args: str, ctx: CommandContext) -> CommandResult:
+    """列出可用的命名 agent profiles。"""
+    from .agent_profiles import discover_agents, render_available_agents
+    return CommandResult("print", render_available_agents(discover_agents()))
+
+
+def _cmd_agent(args: str, ctx: CommandContext) -> CommandResult:
+    """切换当前会话的活动 agent profile：/agent <name>（无参=显示用法）。"""
+    name = args.strip()
+    if not name:
+        return CommandResult("print", "Usage: /agent <name>  (see /agents for the list)")
+    # 交给 CLI 处理实际切换（需要访问运行时 state / agent_loop）
+    return CommandResult("action", f"agent:{name}")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -184,6 +199,8 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "compact": _cmd_compact,
     "plan": _cmd_plan,
     "plan-mode": _cmd_plan_mode,
+    "agents": _cmd_agents,
+    "agent": _cmd_agent,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,

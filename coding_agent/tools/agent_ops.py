@@ -69,6 +69,11 @@ class AgentSpawnTool(Tool):
                     "type": "string",
                     "description": "Optional model override for the sub-agent (defaults to parent's model)"
                 },
+                "agent": {
+                    "type": "string",
+                    "description": "Optional named agent profile (from .coding-agent/agents/<name>.md) "
+                                   "to apply its system prompt, model, and tool restrictions."
+                },
                 "max_turns": {
                     "type": "integer",
                     "description": "Maximum turns for the sub-agent (default: 10)"
@@ -88,6 +93,7 @@ class AgentSpawnTool(Tool):
 
         model = kwargs.get("model")
         max_turns = kwargs.get("max_turns", 10)
+        agent_name = kwargs.get("agent")
 
         if self._parent_agent is None:
             raise ToolExecutionError(self.name, "Parent agent not configured")
@@ -95,9 +101,10 @@ class AgentSpawnTool(Tool):
         return await _run_subagent(
             parent_agent=self._parent_agent,
             task=task,
-            label="subagent",
+            label=agent_name or "subagent",
             model=model,
             max_turns=max_turns,
+            profile_name=agent_name,
         )
 
 
@@ -202,6 +209,7 @@ async def _run_subagent(
     label: str = "subagent",
     model: str | None = None,
     max_turns: int = 10,
+    profile_name: str | None = None,
 ) -> str:
     """
     运行单个子代理
@@ -234,17 +242,32 @@ async def _run_subagent(
 
     # 创建子代理的 config（继承父代理配置）
     parent_config = parent_agent.config
+
+    # 解析命名 agent profile（若指定）：覆盖 model / system_prompt / temperature。
+    profile = None
+    if profile_name:
+        try:
+            from ..core.agent_profiles import load_agent
+            profile = load_agent(profile_name)
+        except Exception:
+            profile = None
+        if profile is None:
+            return (f"Error [{label}]: agent profile '{profile_name}' not found. "
+                    f"Define it at .coding-agent/agents/{profile_name}.md")
+
     child_config = AgentConfig(
-        model=model or parent_config.model,
+        model=model or (profile.model if profile and profile.model else parent_config.model),
         api_key=parent_config.api_key,
         api_base_url=parent_config.api_base_url,
         max_tokens=parent_config.max_tokens,
-        temperature=parent_config.temperature,
+        temperature=(profile.temperature if profile and profile.temperature is not None
+                     else parent_config.temperature),
         max_context_tokens=parent_config.max_context_tokens,
         auto_compact=parent_config.auto_compact,
         auto_approve=True,  # 子代理自动批准所有操作
         max_turns=max_turns,
-        system_prompt=parent_config.system_prompt,
+        system_prompt=(profile.system_prompt if profile and profile.system_prompt
+                       else parent_config.system_prompt),
         session_db_path=parent_config.session_db_path,
     )
 
@@ -265,6 +288,10 @@ async def _run_subagent(
     # 注入模型调用函数（继承父代理的）
     if parent_agent._model_call_fn:
         child_agent.set_model_call_fn(parent_agent._model_call_fn)
+
+    # 应用 profile 的工具过滤（若有）：子代理只能看到/调用允许的工具。
+    if profile is not None and (profile.allow_tools or profile.deny_tools):
+        child_agent.set_tool_filter(profile.tool_allowed)
 
     # 收集最终结果
     final_result = ""
