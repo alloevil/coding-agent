@@ -50,6 +50,26 @@ def _tool_fn_name(tool_def: dict) -> str:
     return tool_def.get("name", "") if isinstance(tool_def, dict) else ""
 
 
+# 工具结果里表示"真实失败"的信号。仅靠 startswith("Error") 会漏掉命令失败
+# （exit code 非 0）、超时、被沙箱拦截、测试失败等——这些都该让 is_error=True，
+# 否则框架会把失败当成功，模型也更难意识到要去修。
+_FAILURE_MARKERS = (
+    "❌ Command failed",
+    "exit code:",
+    "⏱ TIMEOUT",
+    "🚫 BLOCKED",
+)
+
+
+def _looks_like_failure(result: str) -> bool:
+    """判断工具结果文本是否表示失败（用于设置 is_error）。"""
+    if not isinstance(result, str):
+        return False
+    if result.startswith("Error"):
+        return True
+    return any(marker in result for marker in _FAILURE_MARKERS)
+
+
 # ---------------------------------------------------------------------------
 # 错误分类
 # ---------------------------------------------------------------------------
@@ -652,10 +672,16 @@ class AgentLoop:
                 result = await self._interruptible_execute(tool_name, arguments)
                 if result == "__INTERRUPTED__":
                     return "[Interrupted by user]", True
-                is_error = result.startswith("Error")
-                
+                is_error = _looks_like_failure(result)
+
                 if not is_error:
                     return result, False
+
+                # 命令/测试报告的失败（exit code、超时、被拦截）是确定性的，
+                # 重试同一调用只会得到同样结果——直接返回失败，不重试。
+                # 只有"Error"开头的工具层错误才走 transient/permanent 重试分类。
+                if not result.startswith("Error"):
+                    return result, True
                 
                 # 工具返回了错误字符串
                 error_category = _classify_error(result)

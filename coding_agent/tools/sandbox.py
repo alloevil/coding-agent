@@ -336,6 +336,9 @@ class ShellSandbox:
                     truncated = True
 
                 result_parts = []
+                if process.returncode != 0:
+                    # 显式失败横幅，放在最前面，确保模型一眼看到失败（不被埋没）
+                    result_parts.append(f"❌ Command failed (exit code {process.returncode})")
                 if stdout_text:
                     result_parts.append(f"stdout:\n{stdout_text}")
                 if stderr_text:
