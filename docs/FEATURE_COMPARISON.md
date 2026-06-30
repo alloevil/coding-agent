@@ -26,7 +26,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Memory | ✅ `memory_*` (SQLite/project) | ✅ (CLAUDE.md + memory) | 🟡 |
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
 | LSP (real language servers) | ✅ `lsp_*` (lazy-start on first use) | ✅ (diagnostics) | ✅ full LSP client |
-| Skills | ❌ | ✅ Skills | ✅ skill tool |
+| Skills | ✅ `skill` (SKILL.md, progressive disclosure, ~/.claude/skills interop) | ✅ Skills | ✅ skill tool |
 | Browser control | ✅ `browser_*` (playwright) | 🟡 | ❌ |
 
 ## Core / loop
@@ -66,14 +66,12 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 **Done since first matrix:** slash commands ✅, config-file load ✅, token budget ✅,
 ask_user ✅, fuzzy edit (7 strategies) ✅, persistent shell cwd ✅, post-edit syntax
 check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested AGENTS.md ✅,
-`git_branch` ✅, production system prompt ✅.
+`git_branch` ✅, production system prompt ✅, **Skills ✅** (progressive disclosure).
 
 **Remaining (offline-verifiable):**
-- **Skills** (❌ for us; ✅ Claude Code, ✅ opencode) — a `skill` tool that loads a
-  named instruction bundle from disk (`.coding-agent/skills/<name>/SKILL.md`) and
-  injects it on demand. Highest-value remaining tool gap; fully local/testable.
 - Session summary/title generation (nice-to-have; needs a model call but verifiable
   with a stubbed model).
+- `slash: true` skills as auto-registered slash commands (small follow-up on Skills).
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
