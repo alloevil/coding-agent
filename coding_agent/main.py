@@ -245,6 +245,8 @@ class CodingAgent:
         self.plan_tool.bind_state(self.state)
         # 用 session_id 作为 prompt 缓存键，提高稳定前缀的缓存命中率
         self.model_client.prompt_cache_key = self.state.session_id
+        # 记录模型名，供 token 估算选对 tokenizer
+        self.state.metadata["model"] = self.config.model
 
         print("🤖 Coding Agent started!")
         print(f"   Session: {self.state.session_id}")

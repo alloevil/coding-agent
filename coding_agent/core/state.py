@@ -132,21 +132,32 @@ class AgentState:
         self.turn_count += 1
     
     def get_token_estimate(self) -> int:
-        """估算当前 token 数（粗略）。计入正文、工具调用参数与工具结果。"""
+        """
+        估算当前 token 数。计入正文、工具调用参数与工具结果。
+
+        优先用真 tokenizer（core.tokens，装了 tiktoken 时）；否则回退字符启发式。
+        模型名从 metadata['model'] 取（缺省 None → 通用编码）。
+        """
+        from .tokens import count_tokens
+        model = (self.metadata or {}).get("model")
+
+        def tok(text: str) -> int:
+            return count_tokens(text, model)
+
         total = 0
         for msg in self.messages:
             if msg.content:
                 if isinstance(msg.content, str):
-                    total += len(msg.content) // 4  # 粗略估算
+                    total += tok(msg.content)
                 elif isinstance(msg.content, list):
                     for item in msg.content:
                         if isinstance(item, dict) and "text" in item:
-                            total += len(item["text"]) // 4
+                            total += tok(item["text"])
             # 工具调用参数
             if msg.tool_calls:
                 for tc in msg.tool_calls:
-                    total += (len(tc.name) + len(json.dumps(tc.arguments))) // 4
+                    total += tok(tc.name) + tok(json.dumps(tc.arguments))
             # 工具结果（通常是最大的 token 消耗来源）
             if msg.tool_result and msg.tool_result.content:
-                total += len(msg.tool_result.content) // 4
+                total += tok(msg.tool_result.content)
         return total

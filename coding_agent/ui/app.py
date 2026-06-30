@@ -165,6 +165,7 @@ class TuiApp:
             self.agent.state = AgentState(session_id=self.agent.session_store.create_session())
         self.agent.plan_tool.bind_state(self.agent.state)
         self.agent.model_client.prompt_cache_key = self.agent.state.session_id
+        self.agent.state.metadata["model"] = self.agent.config.model
         self.state.session_id = self.agent.state.session_id
 
         # 把流式增量重定向到 live 缓冲（替代 print），修复 print 打断 Live 的问题。
