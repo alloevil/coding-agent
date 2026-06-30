@@ -139,6 +139,33 @@ def _check_contains_any(d: str, filename: str, needles: list[str]) -> tuple[bool
             return True, f"Found '{n}' in {filename}"
     return False, f"None of {needles} found in {filename}"
 
+
+def _find_file(d: str, filename: str) -> Path | None:
+    """在工作目录内递归查找 filename（先看根目录，再 rglob）。
+
+    很多任务里 agent 会按惯例把测试放进 tests/ 子目录——只查根目录会把
+    这种“更规范”的做法误判为失败。这个 helper 让验证测的是“文件是否存在
+    且内容正确”，而不强制其位置。
+    """
+    root = Path(d, filename)
+    if root.exists():
+        return root
+    matches = list(Path(d).rglob(filename))
+    return matches[0] if matches else None
+
+
+def _check_contains_any_recursive(d: str, filename: str, needles: list[str]) -> tuple[bool, str]:
+    """递归找到 filename，检查包含任一 needle。"""
+    p = _find_file(d, filename)
+    if p is None:
+        return False, f"File '{filename}' not found (searched recursively)"
+    content = p.read_text()
+    rel = p.relative_to(d)
+    for n in needles:
+        if n in content:
+            return True, f"Found '{n}' in {rel}"
+    return False, f"None of {needles} found in {rel}"
+
 def _check_refactor(d: str) -> tuple[bool, str]:
     vp = Path(d, "validators.py")
     up = Path(d, "user.py")
@@ -155,8 +182,8 @@ def _check_refactor(d: str) -> tuple[bool, str]:
     return True, "validators.py created and imported"
 
 def _check_testgen(d: str) -> tuple[bool, str]:
-    p = Path(d, "test_palindrome.py")
-    if not p.exists():
+    p = _find_file(d, "test_palindrome.py")
+    if p is None:
         return False, "test_palindrome.py not created"
     content = p.read_text()
     if "def test_" not in content:
@@ -953,7 +980,7 @@ def fetch_multiple(urls):
         return max_val
     return value
 """},
-        verify_fn=lambda d: _check_contains(d, "test_clamp.py", "def test_") if Path(d, "test_clamp.py").exists() else (False, "test_clamp.py not found"),
+        verify_fn=lambda d: _check_contains_any_recursive(d, "test_clamp.py", ["def test_"]),
         max_turns=8,
     ),
     BenchmarkCase(
@@ -966,7 +993,7 @@ def fetch_multiple(urls):
         raise ValueError("Division by zero")
     return a / b
 """},
-        verify_fn=lambda d: _check_contains_any(d, "test_divider.py", ["pytest.raises", "assert.*raise", "ValueError", "with.*raise"]) if Path(d, "test_divider.py").exists() else (False, "test_divider.py not found"),
+        verify_fn=lambda d: _check_contains_any_recursive(d, "test_divider.py", ["pytest.raises", "assert.*raise", "ValueError", "with.*raise"]),
         max_turns=8,
     ),
     BenchmarkCase(
@@ -977,7 +1004,7 @@ def fetch_multiple(urls):
         setup_files={"math_utils.py": """def is_even(n):
     return n % 2 == 0
 """},
-        verify_fn=lambda d: _check_contains_any(d, "test_math_utils.py", ["parametrize", "pytest.mark.parametrize"]) if Path(d, "test_math_utils.py").exists() else (False, "test_math_utils.py not found"),
+        verify_fn=lambda d: _check_contains_any_recursive(d, "test_math_utils.py", ["parametrize", "pytest.mark.parametrize"]),
         max_turns=8,
     ),
     BenchmarkCase(
@@ -993,7 +1020,7 @@ def get_user_data(user_id):
     with urllib.request.urlopen(url) as resp:
         return json.loads(resp.read())
 """},
-        verify_fn=lambda d: _check_contains_any(d, "test_user_service.py", ["mock", "patch", "Mock", "MagicMock"]) if Path(d, "test_user_service.py").exists() else (False, "test_user_service.py not found"),
+        verify_fn=lambda d: _check_contains_any_recursive(d, "test_user_service.py", ["mock", "patch", "Mock", "MagicMock"]),
         max_turns=8,
     ),
     BenchmarkCase(
@@ -1024,7 +1051,7 @@ class JsonStorage:
             return json.load(f)
 """,
         },
-        verify_fn=lambda d: (any(Path(d).glob("test_*.py")), "Integration test file" + (" found" if any(Path(d).glob("test_*.py")) else " not found")),
+        verify_fn=lambda d: (any(Path(d).rglob("test_*.py")), "Integration test file" + (" found" if any(Path(d).rglob("test_*.py")) else " not found")),
         max_turns=10,
     ),
 
