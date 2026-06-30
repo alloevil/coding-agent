@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (588 tests passing). Compares our `coding-agent` against:
+Status snapshot (612 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -49,7 +49,9 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Interrupt | ✅ | ✅ (Esc) | ✅ |
 | Rollback / revert edits | ✅ `rollback_last` | 🟡 | ✅ session revert |
 | Permissions (allow/deny/ask) | ✅ rule engine | ✅ (settings perms) | ✅ per-tool permission |
-| Multi-provider | ✅ (`providers` config + `/model` switch; OpenAI-compat) | ✅ (Anthropic) | ✅ (many providers) |
+| Multi-provider | ✅ (`providers` config + `/model` switch; OpenAI **and** Anthropic protocol) | ✅ (Anthropic) | ✅ (many providers) |
+| Backend protocol | ✅ OpenAI `/chat/completions` + Anthropic `/v1/messages` | ✅ (Anthropic) | ✅ (ai-sdk) |
+| Session status stream | ✅ (SessionStatusTracker + subscribe + `/status`) | 🟡 | ✅ (status.ts) |
 | Session persistence | ✅ SQLite | ✅ | ✅ |
 | MCP | ✅ stdio + HTTP/SSE remote | ✅ (stdio+SSE) | ✅ (stdio+SSE+oauth) |
 
