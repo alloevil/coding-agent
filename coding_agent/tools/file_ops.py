@@ -457,11 +457,11 @@ async def _ripgrep_files(pattern: str, root: str) -> str | None:
 
 
 async def _ripgrep_grep(pattern: str, path: str, include: str | None,
-                        include_ignored: bool) -> str | None:
+                        include_ignored: bool, context_lines: int = 0) -> str | None:
     """
     用 ripgrep 执行内容搜索；rg 不可用返回 None（让调用方回退 Python 实现）。
 
-    rg 原生尊重 .gitignore、速度快。--max-count 之外用总量 100 行截断。
+    rg 原生尊重 .gitignore、速度快。context_lines>0 时用 -C 带上下文。
     """
     import shutil
     rg = shutil.which("rg")
@@ -471,6 +471,8 @@ async def _ripgrep_grep(pattern: str, path: str, include: str | None,
     LIMIT = 100
     args = [rg, "--line-number", "--no-heading", "--color=never",
             "--ignore-case", "-m", str(LIMIT)]
+    if context_lines > 0:
+        args += ["-C", str(min(context_lines, 10))]
     if include:
         args += ["--glob", include]
     if include_ignored:
@@ -537,6 +539,10 @@ class GrepTool(Tool):
                 "include_ignored": {
                     "type": "boolean",
                     "description": "Also search ignored dirs (.git, node_modules, venv, build...). Default false."
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Lines of context to show before/after each match (like grep -C). Default 0."
                 }
             },
             "required": ["pattern"]
@@ -553,12 +559,13 @@ class GrepTool(Tool):
         path = kwargs.get("path", ".")
         include = kwargs.get("include")
         include_ignored = kwargs.get("include_ignored", False)
+        context_lines = int(kwargs.get("context_lines") or 0)
 
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
 
         # 优先用 ripgrep（快、原生尊重 .gitignore）；不可用则回退 Python 实现
-        rg_result = await _ripgrep_grep(pattern, path, include, include_ignored)
+        rg_result = await _ripgrep_grep(pattern, path, include, include_ignored, context_lines)
         if rg_result is not None:
             return rg_result
 
@@ -576,9 +583,18 @@ class GrepTool(Tool):
             for file_path in files:
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    for i, line in enumerate(content.splitlines(), 1):
+                    flines = content.splitlines()
+                    for i, line in enumerate(flines, 1):
                         if re.search(pattern, line, re.IGNORECASE):
-                            results.append(f"{file_path}:{i}: {line.rstrip()}")
+                            if context_lines > 0:
+                                lo = max(0, i - 1 - context_lines)
+                                hi = min(len(flines), i + context_lines)
+                                for j in range(lo, hi):
+                                    marker = ":" if (j + 1) == i else "-"
+                                    results.append(f"{file_path}:{j+1}{marker} {flines[j].rstrip()}")
+                                results.append("--")
+                            else:
+                                results.append(f"{file_path}:{i}: {line.rstrip()}")
                             if len(results) >= 100:
                                 break
                 except (UnicodeDecodeError, PermissionError):

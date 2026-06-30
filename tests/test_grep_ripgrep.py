@@ -80,3 +80,22 @@ async def test_file_search_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: None)
     out = await FileSearchTool().execute(pattern="**/*.py", root=str(tmp_path))
     assert "x.py" in out
+
+
+# ── grep context lines ──────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_grep_context_lines_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)  # force Python path
+    (tmp_path / "c.py").write_text("a = 1\nb = 2\nTARGET\nd = 4\ne = 5\n")
+    out = await GrepTool().execute(pattern="TARGET", path=str(tmp_path), context_lines=1)
+    # 应包含匹配行前后各 1 行
+    assert "b = 2" in out and "TARGET" in out and "d = 4" in out
+    assert "a = 1" not in out  # 超出上下文范围
+
+
+@pytest.mark.asyncio
+async def test_grep_no_context_default(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    (tmp_path / "c.py").write_text("x\nTARGET\ny\n")
+    out = await GrepTool().execute(pattern="TARGET", path=str(tmp_path))
+    assert "TARGET" in out and "\nx" not in out
