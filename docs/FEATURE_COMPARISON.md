@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (560 tests passing). Compares our `coding-agent` against:
+Status snapshot (588 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -13,7 +13,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 |---|---|---|---|
 | Read file (paginated) | ✅ `file_read` (2k pages, binary/size guard) | ✅ Read | ✅ read |
 | Write file | ✅ `file_write` (+syntax warn) | ✅ Write | ✅ write |
-| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies, returns diff) | ✅ Edit | ✅ edit (9 strategies) |
+| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies, returns diff, auto-format) | ✅ Edit | ✅ edit (9 strategies) |
 | Multi-file atomic patch | ✅ `apply_patch` | 🟡 (MultiEdit) | ✅ apply-patch |
 | Glob / file search | ✅ `file_search` (gitignore-aware) | ✅ Glob | ✅ glob |
 | Grep | ✅ `grep` (gitignore-aware) | ✅ Grep | ✅ grep |
@@ -25,7 +25,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Ask-user / question | ✅ `ask_user` | ✅ (AskUserQuestion) | ✅ question |
 | Memory | ✅ `memory_*` (SQLite/project) | ✅ (CLAUDE.md + memory) | 🟡 |
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
-| LSP (real language servers) | ✅ `lsp_*` (lazy-start on first use) | ✅ (diagnostics) | ✅ full LSP client |
+| LSP (real language servers) | ✅ `lsp_*` (lazy-start; didChange refresh; impl + workspace-symbol) | ✅ (diagnostics) | ✅ full LSP client |
 | Skills | ✅ `skill` (SKILL.md, progressive disclosure, ~/.claude/skills interop) | ✅ Skills | ✅ skill tool |
 | Named custom agents | ✅ (`.coding-agent/agents/*.md`: prompt+model+tools+mode; `/agent` `/agents`) | ✅ subagents | ✅ agent/mode |
 | Per-agent tool restriction | ✅ (profile allow/deny; hidden from model + denied at dispatch) | ✅ | ✅ |
@@ -49,9 +49,9 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Interrupt | ✅ | ✅ (Esc) | ✅ |
 | Rollback / revert edits | ✅ `rollback_last` | 🟡 | ✅ session revert |
 | Permissions (allow/deny/ask) | ✅ rule engine | ✅ (settings perms) | ✅ per-tool permission |
-| Multi-provider | 🟡 (OpenAI-compat; Anthropic blocked here) | ✅ (Anthropic) | ✅ (many providers) |
+| Multi-provider | ✅ (`providers` config + `/model` switch; OpenAI-compat) | ✅ (Anthropic) | ✅ (many providers) |
 | Session persistence | ✅ SQLite | ✅ | ✅ |
-| MCP | ✅ stdio client | ✅ (stdio+SSE) | ✅ (stdio+SSE+oauth) |
+| MCP | ✅ stdio + HTTP/SSE remote | ✅ (stdio+SSE) | ✅ (stdio+SSE+oauth) |
 
 ## Surface / UX
 
