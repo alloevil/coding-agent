@@ -212,6 +212,13 @@ class AgentLoop:
         # ---- 工具回滚 ----
         self.rollback_log = RollbackLog()
 
+        # ---- 细粒度权限策略 ----
+        from .permissions import PermissionPolicy
+        self.permission_policy = PermissionPolicy.from_config(
+            getattr(config, "permissions", None),
+            auto_approve=config.auto_approve,
+        )
+
         # 自动注册子代理工具 + 回滚工具。
         # 子代理传 register_builtin_tools=False，避免用自己的引用覆盖父代理
         # 已注册的 agent_spawn/agent_parallel（它们共享同一个 tool_registry）。
@@ -344,13 +351,17 @@ class AgentLoop:
             self.session_store.save_state(state.session_id, state)
 
     def _is_parallelizable(self, tool_call: ToolCall) -> bool:
-        """工具是否可并发执行：存在、READ 权限、且当前配置下自动放行。"""
+        """工具是否可并发执行：存在、READ 权限、且策略判定为 ALLOW（不需询问）。"""
+        from .permissions import Decision
         tool = self.tool_registry.get_tool(tool_call.name)
         if tool is None:
             return False
         if tool.permission != ToolPermission.READ:
             return False
-        return not self._needs_permission(tool.permission)
+        decision = self.permission_policy.decide(
+            tool_call.name, tool_call.arguments, tool.permission
+        )
+        return decision == Decision.ALLOW
 
     async def _dispatch_one(
         self, tool_call: ToolCall, state: AgentState
@@ -365,53 +376,64 @@ class AgentLoop:
             },
         )
 
-        # 9. Permission gate
+        # 9. Permission gate（细粒度策略：DENY / ALLOW / ASK）
+        from .permissions import Decision
         tool = self.tool_registry.get_tool(tool_call.name)
         if not tool:
             result = f"Error: Tool '{tool_call.name}' not found"
             is_error = True
-        elif self._needs_permission(tool.permission):
-            yield AgentEventData(
-                event=AgentEvent.PERMISSION_REQUEST,
-                data={
-                    "id": tool_call.id,
-                    "name": tool_call.name,
-                    "arguments": tool_call.arguments,
-                    "permission": tool.permission.value,
-                },
+        else:
+            decision = self.permission_policy.decide(
+                tool_call.name, tool_call.arguments, tool.permission
             )
-            if self._permission_handler:
-                try:
-                    approved = await self._permission_handler(
-                        tool_call.name, tool_call.arguments
-                    )
-                except Exception as e:
-                    approved = False
-                    yield AgentEventData(
-                        event=AgentEvent.ERROR,
-                        data={"error": f"Permission handler error: {e}"},
-                    )
-            else:
-                approved = False
 
-            if approved:
+            if decision == Decision.DENY:
+                result = (
+                    f"Permission denied by policy for '{tool_call.name}' "
+                    f"(arguments: {tool_call.arguments})"
+                )
+                is_error = True
+            elif decision == Decision.ASK:
+                yield AgentEventData(
+                    event=AgentEvent.PERMISSION_REQUEST,
+                    data={
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                        "permission": tool.permission.value,
+                    },
+                )
+                if self._permission_handler:
+                    try:
+                        approved = await self._permission_handler(
+                            tool_call.name, tool_call.arguments
+                        )
+                    except Exception as e:
+                        approved = False
+                        yield AgentEventData(
+                            event=AgentEvent.ERROR,
+                            data={"error": f"Permission handler error: {e}"},
+                        )
+                else:
+                    approved = False
+
+                if approved:
+                    result, is_error = "", False
+                    async for item in self._recovery_events(tool_call, state):
+                        if isinstance(item, tuple):
+                            result, is_error = item
+                        else:
+                            yield item
+                else:
+                    result = f"Permission denied for tool '{tool_call.name}'"
+                    is_error = True
+            else:  # Decision.ALLOW
                 result, is_error = "", False
                 async for item in self._recovery_events(tool_call, state):
                     if isinstance(item, tuple):
                         result, is_error = item
                     else:
                         yield item
-            else:
-                result = f"Permission denied for tool '{tool_call.name}'"
-                is_error = True
-        else:
-            # 自动允许（READ 权限）
-            result, is_error = "", False
-            async for item in self._recovery_events(tool_call, state):
-                if isinstance(item, tuple):
-                    result, is_error = item
-                else:
-                    yield item
 
         state.add_tool_result(tool_call.id, result, is_error)
         yield AgentEventData(
