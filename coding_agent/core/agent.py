@@ -723,7 +723,29 @@ class AgentLoop:
         elif tool_name == "shell_exec":
             rollback_data["command"] = arguments.get("command", "")
             rollback_data["workdir"] = arguments.get("workdir")
-        
+
+        elif tool_name == "apply_patch":
+            # 解析补丁，快照每个受影响文件的写前内容（add 记 None=新建）
+            from pathlib import Path
+            try:
+                from ..tools.patch_ops import parse_patch
+                ops = parse_patch(arguments.get("patch", ""))
+                root = Path(arguments.get("root", "."))
+                snapshots: dict[str, str | None] = {}
+                for op in ops:
+                    fp = root / op["path"]
+                    key = str(fp)
+                    if op["op"] == "add":
+                        snapshots[key] = None  # 原本不存在
+                    else:
+                        try:
+                            snapshots[key] = fp.read_text(encoding="utf-8")
+                        except OSError:
+                            snapshots[key] = None
+                rollback_data["snapshots"] = snapshots
+            except Exception:
+                return  # 补丁无法解析则不记录（apply 也会失败）
+
         else:
             # 其他工具不记录回滚
             return
@@ -782,7 +804,24 @@ class AgentLoop:
             elif record.tool_name == "shell_exec":
                 command = record.rollback_data.get("command", "")
                 return f"Cannot rollback shell_exec (command: {command}). Manual intervention may be required."
-            
+
+            elif record.tool_name == "apply_patch":
+                from pathlib import Path
+                snapshots = record.rollback_data.get("snapshots", {})
+                restored, deleted = 0, 0
+                for key, original in snapshots.items():
+                    p = Path(key)
+                    if original is None:
+                        # 原本不存在 -> 删除新增的文件
+                        if p.exists():
+                            p.unlink()
+                            deleted += 1
+                    else:
+                        p.write_text(original, encoding="utf-8")
+                        restored += 1
+                return (f"Rolled back apply_patch: restored {restored} file(s), "
+                        f"deleted {deleted} added file(s)")
+
             else:
                 return f"Error: Rollback not supported for tool '{record.tool_name}'"
         
