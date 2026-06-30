@@ -373,9 +373,15 @@ class CodingAgent:
                 return "continue"
             if act == "plan_mode":
                 pol = self.agent_loop.permission_policy
+                was_plan = pol.plan_mode
                 pol.plan_mode = not pol.plan_mode
                 print("🧭 Plan mode " + ("ON — read-only; the agent can explore and "
                       "plan but won't edit/run." if pol.plan_mode else "OFF — edits allowed again."))
+                # plan→build：关闭 plan mode 时注入一次性交接提醒
+                if was_plan and not pol.plan_mode and self.state:
+                    from .core.agent_handoff import build_switch_note
+                    had_plan = bool((self.state.metadata or {}).get("plan"))
+                    self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
                 return "continue"
             if act.startswith("agent:"):
                 self._switch_agent(act.split(":", 1)[1])
@@ -409,6 +415,12 @@ class CodingAgent:
         if self.state:
             self.state.metadata["active_agent"] = name
             self.state.metadata["prev_agent"] = prev
+            # plan→build：从规划态切到执行态时注入一次性交接提醒
+            from .core.agent_handoff import should_handoff, build_switch_note
+            in_plan_mode = self.agent_loop.permission_policy.plan_mode
+            if should_handoff(prev, in_plan_mode, name, in_plan_mode):
+                had_plan = bool((self.state.metadata or {}).get("plan"))
+                self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
         print(f"🧩 Switched to agent '{name}'"
               + (f" ({profile.model})" if profile.model else "")
               + (f" — {profile.description}" if profile.description else ""))
