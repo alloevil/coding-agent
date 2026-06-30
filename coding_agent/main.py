@@ -45,6 +45,12 @@ class CodingAgent:
 
         # 初始化工具
         self.tool_registry = get_registry()
+        # 应用工具执行超时配置（防止挂死调用冻结 agent）
+        self.tool_registry.default_tool_timeout = (
+            self.config.tool_timeout_seconds
+            if self.config.tool_timeout_seconds and self.config.tool_timeout_seconds > 0
+            else None
+        )
         register_file_tools()
         register_shell_tools()
         register_git_tools()

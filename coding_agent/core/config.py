@@ -47,6 +47,8 @@ class AgentConfig:
     stream: bool = True  # 是否流式输出
     # 累计 token 预算（输入+输出+推理）；<=0 表示不限制。超出后停止本轮循环。
     max_total_tokens: int = 0
+    # 单个工具执行超时（秒）；<=0 表示不限制。防止挂死调用冻结 agent。
+    tool_timeout_seconds: float = 120.0
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}

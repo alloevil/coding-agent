@@ -25,13 +25,19 @@ class ToolRegistry:
     - 获取工具定义列表
     """
     
-    def __init__(self, max_result_chars: int = 30000) -> None:
+    def __init__(self, max_result_chars: int = 30000,
+                 default_tool_timeout: float | None = 120.0) -> None:
         self._tools: dict[str, Tool] = {}
         self._hooks: dict[HookEvent, list[Hook]] = {event: [] for event in HookEvent}
         self._disabled_tools: set[str] = set()
         # 单条工具结果的字符上限：超过则 head+tail 截断，
         # 防止单次巨大输出（冗长构建/大范围 grep）撑爆下一次模型请求。
         self.max_result_chars = max_result_chars
+        # 单个工具执行的默认超时（秒）。防止挂死的 MCP/网络/LSP 调用
+        # 永久冻结整个 agent。None/<=0 表示不限制。
+        # 自带超时的工具（如 shell_exec）通过 _self_timed_tools 豁免。
+        self.default_tool_timeout = default_tool_timeout
+        self._self_timed_tools: set[str] = {"shell_exec"}
     
     def register(self, tool: Tool) -> None:
         """注册工具"""
@@ -134,6 +140,31 @@ class ToolRegistry:
             + result[-tail:]
         )
 
+    def _effective_timeout(self, name: str, tool: Tool) -> float | None:
+        """解析某工具的有效超时：工具自带 timeout_seconds 优先；自计时工具豁免。"""
+        if name in self._self_timed_tools:
+            return None
+        override = getattr(tool, "timeout_seconds", None)
+        if override is not None:
+            return override if override and override > 0 else None
+        t = self.default_tool_timeout
+        return t if t and t > 0 else None
+
+    async def _execute_with_timeout(self, name: str, tool: Tool,
+                                    arguments: dict[str, Any]) -> str:
+        """执行工具，必要时套 asyncio.wait_for，超时返回明确错误而非冻结。"""
+        import asyncio
+
+        timeout = self._effective_timeout(name, tool)
+        if timeout is None:
+            return await tool.execute(**arguments)
+        try:
+            return await asyncio.wait_for(tool.execute(**arguments), timeout=timeout)
+        except asyncio.TimeoutError:
+            return (f"Error: tool '{name}' timed out after {timeout:.0f}s. "
+                    f"It may be stuck (slow network, hung process, or large input). "
+                    f"Try a narrower request or a smaller scope.")
+
     async def execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """
         执行工具
@@ -159,7 +190,7 @@ class ToolRegistry:
             return f"Error: Tool '{name}' execution blocked by hook"
         
         try:
-            result = await tool.execute(**arguments)
+            result = await self._execute_with_timeout(name, tool, arguments)
 
             # 边界保护：截断超长结果（head+tail）
             result = self._truncate_result(result)
