@@ -112,21 +112,33 @@ class FileReadTool(Tool):
                 return f"Error: '{path}' appears to be a binary file; cannot display as text"
 
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+                all_lines = f.readlines()
 
-            # 应用 offset 和 limit
+            total_lines = len(all_lines)
             start = max(0, offset - 1)  # 转换为 0-indexed
-            if limit:
-                lines = lines[start:start + limit]
-            else:
-                lines = lines[start:]
+
+            # 默认分页：未指定 limit 时，单次最多返回 DEFAULT_PAGE 行，
+            # 并在末尾告知如何读取下一页（避免一次性灌入超长文件）。
+            DEFAULT_PAGE = 2000
+            page = limit if limit else DEFAULT_PAGE
+            lines = all_lines[start:start + page]
+            end = start + len(lines)  # 0-indexed exclusive
 
             # 添加行号
             result = []
             for i, line in enumerate(lines, start=start + 1):
                 result.append(f"{i:4d} | {line.rstrip()}")
+            body = "\n".join(result)
 
-            return "\n".join(result)
+            # 分页脚注：还有更多内容时提示下一页参数
+            if end < total_lines:
+                remaining = total_lines - end
+                body += (
+                    f"\n\n... {remaining} more line(s). "
+                    f"Read next page with offset={end + 1}"
+                    + (f", limit={page}." if limit else ".")
+                )
+            return body
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
