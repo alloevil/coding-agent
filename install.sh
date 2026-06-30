@@ -1,36 +1,76 @@
 #!/usr/bin/env bash
 # coding-agent 一键安装脚本
 #
-# 用法：
-#   ./install.sh                 # 创建 .venv 并安装（含 dev 依赖）
-#   ./install.sh --with-tokenizer # 额外装 tiktoken（更准的 token 计数）
-#   ./install.sh --with-browser   # 额外装 playwright（browser_* 工具）
-#   ./install.sh --all            # 装上面所有可选依赖
-#   ./install.sh --no-dev         # 不装 dev 依赖（仅运行所需）
+# 两种用法：
+#
+#   A) 远程一行装（无需先 clone）：
+#        curl -fsSL https://raw.githubusercontent.com/alloevil/coding-agent/master/install.sh | bash
+#      脚本会自动 git clone 到 ./coding-agent 再安装。
+#
+#   B) 已 clone 后本地装：
+#        ./install.sh
+#
+# 选项：
+#   --with-tokenizer  额外装 tiktoken（更准的 token 计数）
+#   --with-browser    额外装 playwright（browser_* 工具）
+#   --all             装上面所有可选依赖
+#   --no-dev          不装 dev 依赖（仅运行所需）
+#   --dir <path>      clone 的目标目录（默认 ./coding-agent）
 #
 # 安装到独立的 .venv，避免污染全局 / conda 环境（coding-agent 固定了
 # httpx>=0.27、rich 等版本，装进共享环境可能与其它项目冲突）。
 set -euo pipefail
 
-cd "$(dirname "$0")"
-
+REPO_URL="https://github.com/alloevil/coding-agent.git"
+CLONE_DIR="coding-agent"
 VENV=".venv"
 WITH_TOKENIZER=0
 WITH_BROWSER=0
 DEV=1
 
-for arg in "$@"; do
-  case "$arg" in
+# 解析参数（先解析 --dir，clone 时要用）
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+  case "${args[$i]}" in
     --with-tokenizer) WITH_TOKENIZER=1 ;;
     --with-browser)   WITH_BROWSER=1 ;;
     --all)            WITH_TOKENIZER=1; WITH_BROWSER=1 ;;
     --no-dev)         DEV=0 ;;
+    --dir)            i=$((i+1)); CLONE_DIR="${args[$i]}" ;;
     -h|--help)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
-    *) echo "Unknown option: $arg (try --help)"; exit 1 ;;
+    *) echo "Unknown option: ${args[$i]} (try --help)"; exit 1 ;;
   esac
+  i=$((i+1))
 done
+
+# 定位仓库根：
+#   - 如果脚本所在目录就是仓库（有 pyproject.toml）→ 用它（本地用法 B）
+#   - 否则（如 curl | bash，无脚本文件）→ git clone 后进入（远程用法 A）
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+  cd "$SCRIPT_DIR"
+else
+  # 远程安装：需要 git
+  if ! command -v git >/dev/null 2>&1; then
+    echo "❌ git not found. Install git, or clone the repo manually then run ./install.sh"
+    exit 1
+  fi
+  if [ -d "$CLONE_DIR/.git" ]; then
+    echo "📁 Found existing clone at $CLONE_DIR, updating ..."
+    git -C "$CLONE_DIR" pull --ff-only || true
+  else
+    echo "⬇️  Cloning $REPO_URL → $CLONE_DIR ..."
+    git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
+  fi
+  cd "$CLONE_DIR"
+fi
 
 # 1. 检查 python3
 if ! command -v python3 >/dev/null 2>&1; then

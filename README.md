@@ -46,7 +46,13 @@ A lightweight, modular AI coding agent framework inspired by [Claude Code](https
 
 ### Installation
 
-One-liner (creates an isolated `.venv` and installs everything):
+Remote one-liner (clones + installs into an isolated `.venv`, no manual clone needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alloevil/coding-agent/master/install.sh | bash
+```
+
+Or clone first, then install:
 
 ```bash
 git clone https://github.com/alloevil/coding-agent.git
