@@ -38,6 +38,10 @@ class ToolRegistry:
         # 自带超时的工具（如 shell_exec）通过 _self_timed_tools 豁免。
         self.default_tool_timeout = default_tool_timeout
         self._self_timed_tools: set[str] = {"shell_exec"}
+        # 截断溢出目录：超长结果的全文写到这里，预览里附路径供按需读取。
+        # None → 用系统临时目录下的 coding-agent-tool-output/。
+        self._spill_dir: str | None = None
+        self._spill_counter = 0
     
     def register(self, tool: Tool) -> None:
         """注册工具"""
@@ -119,12 +123,30 @@ class ToolRegistry:
                 return True
         return False
 
+    def _spill_full_output(self, result: str) -> str | None:
+        """把超长结果全文写到溢出目录，返回文件路径（失败返回 None）。"""
+        import os
+        import tempfile
+        try:
+            base = self._spill_dir or os.path.join(
+                tempfile.gettempdir(), "coding-agent-tool-output")
+            os.makedirs(base, exist_ok=True)
+            self._spill_counter += 1
+            path = os.path.join(base, f"output-{os.getpid()}-{self._spill_counter}.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(result)
+            return path
+        except OSError:
+            return None
+
     def _truncate_result(self, result: str) -> str:
         """
         把超长工具结果截断为 head + tail，并标注省略的字符数。
 
         保留头尾通常比单纯保留头部更有用：错误/摘要往往在末尾，
-        而命令/文件开头也常包含关键信息。
+        而命令/文件开头也常包含关键信息。此外把全文写到溢出文件，
+        在预览里给出路径，模型可按需用 file_read 读取完整内容
+        （参考 opencode 的 truncation-dir）。
         """
         if not isinstance(result, str):
             return result
@@ -134,9 +156,12 @@ class ToolRegistry:
         head = int(cap * 0.7)
         tail = cap - head
         omitted = len(result) - head - tail
+        spill = self._spill_full_output(result)
+        hint = (f" full output saved to {spill} — read it for the rest"
+                if spill else "")
         return (
             result[:head]
-            + f"\n\n... [{omitted} characters truncated by tool-output limit] ...\n\n"
+            + f"\n\n... [{omitted} characters truncated by tool-output limit;{hint}] ...\n\n"
             + result[-tail:]
         )
 
