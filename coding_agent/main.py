@@ -376,18 +376,68 @@ class CodingAgent:
                       f"(cache hits: {mc.cache_hit_rate*100:.0f}%)")
 
 
-async def main() -> None:
+def _parse_args(argv: list[str]) -> dict[str, Any]:
+    """解析 CLI 参数：--resume [id] / --list-sessions / --help。"""
+    import argparse
+    p = argparse.ArgumentParser(prog="coding-agent", add_help=True,
+                                description="Lightweight AI coding agent")
+    p.add_argument("--resume", nargs="?", const="__PICK__", default=None,
+                   metavar="SESSION_ID",
+                   help="Resume a session by id; with no id, pick from recent sessions")
+    p.add_argument("--list-sessions", action="store_true",
+                   help="List recent sessions and exit")
+    args = p.parse_args(argv)
+    return {"resume": args.resume, "list_sessions": args.list_sessions}
+
+
+async def main(argv: list[str] | None = None) -> None:
     """主函数"""
+    import sys as _sys
+    opts = _parse_args(argv if argv is not None else _sys.argv[1:])
+
     config = AgentConfig.resolve()
-    
+
+    # --list-sessions: 列出最近会话后退出（不需要 API key）
+    if opts["list_sessions"]:
+        from .memory import SessionStore
+        store = SessionStore(config.session_db_path)
+        sessions = store.list_sessions()
+        if not sessions:
+            print("No sessions yet.")
+        else:
+            print("Recent sessions:")
+            for s in sessions[:20]:
+                print(f"  {s['id']}  ({s.get('updated_at', '?')})")
+        return
+
     # 检查 API key
     if not config.api_key:
         print("Error: No API key configured")
         print("Set OPENAI_API_KEY or LLM_API_KEY environment variable")
         sys.exit(1)
-    
+
     agent = CodingAgent(config)
-    await agent.start()
+
+    # --resume: 恢复指定/选中的会话
+    resume_id = opts["resume"]
+    if resume_id == "__PICK__":
+        sessions = agent.session_store.list_sessions()
+        if not sessions:
+            print("No sessions to resume; starting fresh.")
+            resume_id = None
+        else:
+            print("Recent sessions:")
+            for i, s in enumerate(sessions[:10], 1):
+                print(f"  {i}. {s['id'][:8]}... ({s.get('updated_at','?')})")
+            try:
+                pick = input("Resume which? [number, or Enter for new]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pick = ""
+            resume_id = (sessions[int(pick) - 1]["id"]
+                         if pick.isdigit() and 1 <= int(pick) <= len(sessions[:10])
+                         else None)
+
+    await agent.start(session_id=resume_id)
 
 
 def cli() -> None:

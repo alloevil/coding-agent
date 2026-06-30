@@ -77,3 +77,33 @@ def test_builtin_beats_custom():
     # 自定义 help 不应覆盖内置 help
     r = dispatch("/help", _ctx(), custom={"help": "custom help"})
     assert "/compact" in r.payload
+
+
+# ── /init ─────────────────────────────────────────────────────────────────
+from coding_agent.core.commands import scan_repo
+
+
+def test_scan_repo_detects_python(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src").mkdir()
+    facts = scan_repo(tmp_path)
+    assert "python" in facts["languages"]
+    assert "pytest" in facts["test_commands"]
+    assert "src/" in facts["top_level"]
+
+
+def test_scan_repo_detects_node(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    facts = scan_repo(tmp_path)
+    assert "javascript/typescript" in facts["languages"]
+    assert "npm test" in facts["test_commands"]
+
+
+def test_init_command_returns_prompt(tmp_path, monkeypatch):
+    (tmp_path / "go.mod").write_text("module x\n")
+    monkeypatch.chdir(tmp_path)
+    r = dispatch("/init", _ctx())
+    assert r.kind == "prompt"
+    assert "AGENTS.md" in r.payload
+    assert "go test ./..." in r.payload  # detected test command embedded

@@ -53,6 +53,7 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /cost        — token usage this session",
         "  /compact     — summarize & compact the conversation now",
         "  /plan        — show the current plan",
+        "  /init        — generate AGENTS.md from a repo scan",
         "  /clear, /new — start a fresh session",
         "  /sessions    — list recent sessions",
         "  /quit        — exit",
@@ -100,6 +101,78 @@ def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", "quit")
 
 
+def scan_repo(root: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """
+    扫描仓库，收集生成 AGENTS.md 所需的事实：语言、依赖/构建文件、测试命令、
+    顶层结构。纯本地、无模型调用。
+    """
+    base = Path(root) if root else Path.cwd()
+    facts: dict[str, Any] = {"root": str(base)}
+
+    markers = {
+        "python": ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"],
+        "javascript/typescript": ["package.json", "tsconfig.json"],
+        "go": ["go.mod"],
+        "rust": ["Cargo.toml"],
+        "java": ["pom.xml", "build.gradle"],
+        "ruby": ["Gemfile"],
+    }
+    langs = []
+    present_markers = []
+    for lang, files in markers.items():
+        for f in files:
+            if (base / f).is_file():
+                langs.append(lang)
+                present_markers.append(f)
+                break
+    facts["languages"] = langs
+    facts["marker_files"] = present_markers
+
+    # 测试命令猜测
+    test_cmds = []
+    if (base / "pyproject.toml").is_file() or list(base.glob("test_*.py")) or (base / "tests").is_dir():
+        test_cmds.append("pytest")
+    if (base / "package.json").is_file():
+        test_cmds.append("npm test")
+    if (base / "go.mod").is_file():
+        test_cmds.append("go test ./...")
+    if (base / "Cargo.toml").is_file():
+        test_cmds.append("cargo test")
+    facts["test_commands"] = test_cmds
+
+    # 顶层目录与关键文件
+    try:
+        entries = sorted(p.name + ("/" if p.is_dir() else "")
+                         for p in base.iterdir()
+                         if not p.name.startswith("."))[:40]
+    except OSError:
+        entries = []
+    facts["top_level"] = entries
+    facts["has_makefile"] = (base / "Makefile").is_file()
+    facts["has_readme"] = any((base / n).is_file() for n in ("README.md", "README.rst", "README"))
+    return facts
+
+
+def _render_init_prompt(facts: dict[str, Any]) -> str:
+    """把扫描事实拼成给模型的 prompt，让它写 AGENTS.md。"""
+    import json
+    return (
+        "Create an AGENTS.md file at the repository root that documents this project "
+        "for future AI coding agents. Base it on these scanned facts, and read a few "
+        "key files (README, build config, entry points) to fill in specifics:\n\n"
+        f"{json.dumps(facts, ensure_ascii=False, indent=2)}\n\n"
+        "AGENTS.md should cover: what the project is, how to install/build, how to run "
+        "tests (use the detected commands), the directory layout, and any conventions "
+        "you can infer. Keep it concise and accurate — don't invent things you can't "
+        "verify. Write the file with file_write."
+    )
+
+
+def _cmd_init(args: str, ctx: CommandContext) -> CommandResult:
+    facts = scan_repo()
+    return CommandResult("prompt", _render_init_prompt(facts))
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -109,6 +182,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,
+    "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
 }
