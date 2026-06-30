@@ -49,6 +49,8 @@ class AgentConfig:
     max_total_tokens: int = 0
     # 单个工具执行超时（秒）；<=0 表示不限制。防止挂死调用冻结 agent。
     tool_timeout_seconds: float = 120.0
+    # 写后自动格式化（prettier/gofmt/black/ruff/...，缺则跳过）。
+    auto_format: bool = True
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}

@@ -45,6 +45,9 @@ class CodingAgent:
 
         # 初始化工具
         self.tool_registry = get_registry()
+        # 写后自动格式化开关
+        from .core.formatter import set_enabled as _set_fmt_enabled
+        _set_fmt_enabled(getattr(self.config, "auto_format", True))
         # 应用工具执行超时配置（防止挂死调用冻结 agent）
         self.tool_registry.default_tool_timeout = (
             self.config.tool_timeout_seconds

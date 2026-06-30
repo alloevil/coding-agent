@@ -290,6 +290,9 @@ class FileWriteTool(Tool):
             # 覆盖写时回显 diff（新建文件不显示，避免整文件刷屏）
             if existed:
                 msg += _make_diff(old_content, content, path)
+            # 写后自动格式化（非阻塞，缺格式化器则跳过）
+            from ..core.formatter import format_file
+            msg += format_file(path)
             return msg
         except Exception as e:
             return f"Error writing file: {str(e)}"
@@ -385,9 +388,11 @@ class FileEditTool(Tool):
             file_path.write_text(new_content, encoding="utf-8")
             _record_read(path)  # 编辑后刷新追踪基线
             suffix = " (replace_all)" if replace_all else ""
+            from ..core.formatter import format_file
             return (f"Successfully edited '{path}'{suffix}"
                     + _syntax_warning(path, new_content) + stale
-                    + _make_diff(content, new_content, path))
+                    + _make_diff(content, new_content, path)
+                    + format_file(path))
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
