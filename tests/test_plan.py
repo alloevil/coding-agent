@@ -76,3 +76,33 @@ def test_render_plan_symbols():
     assert "[x] a" in out
     assert "[ ] b" in out
     assert "1/2 completed" in out
+
+
+# ── plan re-injection into context ──────────────────────────────────────────
+from coding_agent.context.manager import ContextManager
+
+
+def test_plan_reinjected_into_context():
+    state = AgentState()
+    state.metadata["plan"] = [
+        {"step": "do A", "status": "completed"},
+        {"step": "do B", "status": "in_progress"},
+    ]
+    state.add_user_message("hi")
+    cm = ContextManager(max_tokens=1000, load_project_context=False)
+    msgs = cm.assemble_context(state, "SYSTEM")
+    # 最后一条应是计划提醒
+    last = msgs[-1]
+    assert last["role"] == "system"
+    assert "Current plan" in last["content"]
+    assert "do A" in last["content"]
+    assert "[~] do B" in last["content"]
+
+
+def test_no_plan_block_when_empty():
+    state = AgentState()
+    state.add_user_message("hi")
+    cm = ContextManager(max_tokens=1000, load_project_context=False)
+    msgs = cm.assemble_context(state, "SYSTEM")
+    joined = " ".join(str(m) for m in msgs)
+    assert "Current plan" not in joined

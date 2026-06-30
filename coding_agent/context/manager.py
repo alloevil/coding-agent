@@ -73,8 +73,25 @@ class ContextManager:
         for msg in state.messages:
             messages.append(msg.to_dict())
 
+        # 4. 回灌当前计划（若有）——让模型每轮都能看见自己的待办，
+        #    放在历史之后作为最新提醒（参考 Claude Code 的 todo 常驻上下文）。
+        plan_block = self._render_plan(state)
+        if plan_block:
+            messages.append({"role": "system", "content": plan_block})
+
         return messages
-    
+
+    def _render_plan(self, state: AgentState) -> str:
+        """把 state.metadata 里的当前计划渲染成一段提醒文本（无则返回空串）。"""
+        plan = state.metadata.get("plan") if state.metadata else None
+        if not plan:
+            return ""
+        try:
+            from ..tools.plan_ops import render_plan
+            return "Current plan (keep this updated via update_plan):\n" + render_plan(plan)
+        except Exception:
+            return ""
+
     def needs_compaction(self, state: AgentState) -> bool:
         """检查是否需要压缩"""
         estimated_tokens = state.get_token_estimate()
