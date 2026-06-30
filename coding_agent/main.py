@@ -291,6 +291,27 @@ class CodingAgent:
             async for event in self.agent_loop.run(self.state, user_input):
                 await self._handle_event(event)
 
+            # 首轮结束后，若还没有标题，生成一个让会话列表可辨识。
+            await self._maybe_set_title()
+
+    async def _maybe_set_title(self) -> None:
+        """会话尚无标题时，用模型（失败回退启发式）生成一行标题并持久化。"""
+        if not self.state:
+            return
+        if (self.state.metadata or {}).get("title"):
+            return
+        from .core.session_title import generate_title
+        try:
+            title = await generate_title(self.state, self._call_model)
+        except Exception:
+            return
+        if title:
+            self.state.metadata["title"] = title
+            try:
+                self.session_store.set_title(self.state.session_id, title)
+            except Exception:
+                pass
+
     async def _handle_command_result(self, result) -> str:
         """处理 slash 命令结果。返回 'quit'/'continue'/'run'。"""
         if result.kind == "print":
@@ -311,7 +332,9 @@ class CodingAgent:
                 sessions = self.session_store.list_sessions()
                 print("\n📋 Recent sessions:")
                 for s in sessions[:5]:
-                    print(f"   {s['id'][:8]}... ({s['updated_at']})")
+                    title = (s.get("metadata") or {}).get("title", "")
+                    label = f" — {title}" if title else ""
+                    print(f"   {s['id'][:8]}... ({s['updated_at']}){label}")
                 return "continue"
             if act == "plan":
                 plan = (self.state.metadata.get("plan") if self.state else None)
@@ -432,7 +455,9 @@ async def main(argv: list[str] | None = None) -> None:
         else:
             print("Recent sessions:")
             for s in sessions[:20]:
-                print(f"  {s['id']}  ({s.get('updated_at', '?')})")
+                title = (s.get("metadata") or {}).get("title", "")
+                label = f"  {title}" if title else ""
+                print(f"  {s['id']}  ({s.get('updated_at', '?')}){label}")
         return
 
     # 检查 API key
