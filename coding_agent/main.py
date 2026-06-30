@@ -41,7 +41,7 @@ class CodingAgent:
     """
     
     def __init__(self, config: AgentConfig | None = None):
-        self.config = config or AgentConfig.from_env()
+        self.config = config or AgentConfig.resolve()
 
         # 初始化工具
         self.tool_registry = get_registry()
@@ -355,7 +355,7 @@ class CodingAgent:
 
 async def main() -> None:
     """主函数"""
-    config = AgentConfig.from_env()
+    config = AgentConfig.resolve()
     
     # 检查 API key
     if not config.api_key:

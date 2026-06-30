@@ -12,6 +12,19 @@ from pathlib import Path
 from typing import Any
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    """读取一个 JSON 配置文件；不存在或解析失败则返回空 dict。"""
+    try:
+        if path.is_file():
+            import json as _json
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 @dataclass
 class AgentConfig:
     """Agent 配置"""
@@ -104,7 +117,42 @@ on unverified changes.
                 config.api_base_url = os.getenv("LLM_BASE_URL", "")
         
         return config
-    
+
+    @classmethod
+    def resolve(cls) -> "AgentConfig":
+        """
+        分层解析配置（后者覆盖前者）：
+          1. 默认值
+          2. 全局配置 ~/.config/coding-agent/config.json（或 $CODING_AGENT_HOME）
+          3. 项目配置 ./.coding-agent.json
+          4. 环境变量（密钥以 env 为准，避免把 key 写进文件）
+
+        非密钥字段由配置文件覆盖默认；密钥/端点最终由 from_env 决定（若设置了）。
+        """
+        import os as _os
+
+        # 1. 默认
+        data: dict[str, Any] = {}
+
+        # 2. 全局配置文件
+        home = _os.environ.get("CODING_AGENT_HOME")
+        global_path = (Path(home) if home else Path.home() / ".config" / "coding-agent") / "config.json"
+        data.update(_read_json(global_path))
+
+        # 3. 项目配置文件
+        data.update(_read_json(Path.cwd() / ".coding-agent.json"))
+
+        # 只保留合法字段
+        cfg = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+        # 4. 环境变量覆盖密钥/端点/模型（复用 from_env 的解析）
+        env_cfg = cls.from_env()
+        if env_cfg.api_key:
+            cfg.api_key = env_cfg.api_key
+            cfg.api_base_url = env_cfg.api_base_url
+            cfg.model = env_cfg.model
+        return cfg
+
     def save(self, path: str) -> None:
         """保存配置到文件"""
         config_path = Path(path).expanduser()
