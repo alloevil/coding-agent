@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Slash commands (`/help /tools /cost /compact /plan /init /new /sessions /quit`) + custom `.coding-agent/commands/*.md`
+- `ask_user` tool — agent asks the user a structured question when genuinely blocked
+- `/init` — scans the repo and generates AGENTS.md
+- `--resume` / `--list-sessions` CLI flags
+- Config file loading + merge (global `~/.config/coding-agent/config.json` + project `./.coding-agent.json`, env wins for secrets)
+- Token-budget stop (`max_total_tokens`)
+- Lifecycle hooks now all fire (pre/post model call, on-compact) + config-driven command hooks
+- Multi-strategy fuzzy `file_edit` (exact → line-trimmed → whitespace-norm → indent-flexible → block-anchor → escape-norm → trimmed-boundary)
+- Persistent shell cwd across `shell_exec` calls
+- Post-edit Python syntax warnings
+- Read-before-edit staleness detection
+- `apply_patch` is now undoable via `rollback_last`
+- MCP stdio client; web_fetch + web_search; reasoning parsing (reasoning_content + reasoning_tokens)
+- Fine-grained permission policy (allow/deny/ask, secret-read blocklist)
+- Parallel read-only tool execution; plan re-injection into context
+- `docs/FEATURE_COMPARISON.md` — feature matrix vs Claude Code + opencode
 - `update_plan` tool (Codex/Claude-Code style step tracking) for multi-step tasks
 - Hierarchical project-context loading: `AGENTS.md` / `CLAUDE.md` walked from
   cwd to repo root + a global file, merged into prompt assembly
