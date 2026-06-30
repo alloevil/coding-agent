@@ -30,6 +30,7 @@ class SkillInfo:
     description: str
     location: str   # SKILL.md 的绝对路径
     content: str    # frontmatter 之后的正文（不含 frontmatter）
+    slash: bool = False   # frontmatter slash: true → 可作为 /name 斜杠命令调用
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -116,6 +117,7 @@ def discover_skills(cwd: str | os.PathLike[str] | None = None,
                 description=fm.get("description", ""),
                 location=str(skill_md.resolve()),
                 content=body,
+                slash=str(fm.get("slash", "")).strip().lower() in ("true", "yes", "1"),
             )
     return found
 

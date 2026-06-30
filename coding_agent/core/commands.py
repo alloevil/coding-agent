@@ -198,10 +198,24 @@ def is_command(text: str) -> bool:
 
 
 def load_custom_commands(root: str | os.PathLike[str] | None = None) -> dict[str, str]:
-    """加载 .coding-agent/commands/*.md 自定义命令（名→模板文本）。"""
+    """加载自定义命令（名→模板文本）。
+
+    两类来源合并（同名时 .md 命令文件优先于 skill）：
+      1. slash:true 的 skills（其正文作为 prompt 模板）
+      2. .coding-agent/commands/*.md 命令文件
+    """
+    out: dict[str, str] = {}
+    # 1. slash:true skills
+    try:
+        from .skills import discover_skills
+        for name, info in discover_skills(cwd=root).items():
+            if info.slash:
+                out[name] = info.content
+    except Exception:
+        pass
+    # 2. .coding-agent/commands/*.md（覆盖同名 skill）
     base = Path(root) if root else Path.cwd()
     cmd_dir = base / ".coding-agent" / "commands"
-    out: dict[str, str] = {}
     if cmd_dir.is_dir():
         for p in cmd_dir.glob("*.md"):
             try:
