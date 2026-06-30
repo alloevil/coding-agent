@@ -174,7 +174,8 @@ class TestInterrupt:
         agent.clear_interrupt()
         assert not agent.is_interrupted()
 
-    def test_run_resets_interrupt(self, agent: AgentLoop):
+    @pytest.mark.asyncio
+    async def test_run_resets_interrupt(self, agent: AgentLoop):
         """run() 开始时应自动清除中断状态"""
         agent.interrupt()
         assert agent.is_interrupted()
@@ -187,11 +188,8 @@ class TestInterrupt:
         agent.set_model_call_fn(mock_model)
         state = AgentState()
 
-        async def _run():
-            async for _ in agent.run(state, "test"):
-                pass
-
-        asyncio.get_event_loop().run_until_complete(_run())
+        async for _ in agent.run(state, "test"):
+            pass
         assert not agent.is_interrupted()
 
     @pytest.mark.asyncio

@@ -46,17 +46,26 @@ A lightweight, modular AI coding agent framework inspired by [Claude Code](https
 
 ### Installation
 
+Install into a dedicated virtualenv so the project's pinned deps (httpx, rich)
+don't clash with other tools in a shared/global environment:
+
 ```bash
 # Clone the repository
 git clone https://github.com/alloevil/coding-agent.git
 cd coding-agent
 
-# Install dependencies
-pip install -e .
+# Create an isolated venv and install (with dev deps). Equivalent to:
+#   python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+make venv
 
-# Or install with dev dependencies
-pip install -e ".[dev]"
+# Run tests / the agent / the benchmark inside the venv
+make test
+make run
+make bench
 ```
+
+> Avoid `pip install -e .` into a shared conda/global environment — it will
+> upgrade httpx/rich and can break unrelated packages.
 
 ### Configuration
 
