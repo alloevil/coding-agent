@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (520 tests passing). Compares our `coding-agent` against:
+Status snapshot (560 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -27,6 +27,11 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
 | LSP (real language servers) | ✅ `lsp_*` (lazy-start on first use) | ✅ (diagnostics) | ✅ full LSP client |
 | Skills | ✅ `skill` (SKILL.md, progressive disclosure, ~/.claude/skills interop) | ✅ Skills | ✅ skill tool |
+| Named custom agents | ✅ (`.coding-agent/agents/*.md`: prompt+model+tools+mode; `/agent` `/agents`) | ✅ subagents | ✅ agent/mode |
+| Per-agent tool restriction | ✅ (profile allow/deny; hidden from model + denied at dispatch) | ✅ | ✅ |
+| Plan→build handoff | ✅ (one-shot synthetic note on switch) | ✅ | ✅ (reminders) |
+| External-dir write guard | ✅ (writes outside workspace root ASK) | 🟡 | ✅ (assertExternalDirectory) |
+| Truncated output spill-to-disk | ✅ (full output to temp file + path hint) | 🟡 | ✅ (truncation-dir) |
 | Browser control | ✅ `browser_*` (playwright) | 🟡 | ❌ |
 
 ## Core / loop
