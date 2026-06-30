@@ -110,6 +110,12 @@ class CodingAgent:
         # 设置权限确认回调
         self.agent_loop.set_permission_handler(self._confirm_permission)
 
+        # 外部目录守卫：默认工作区根=当前目录，根外写/执行需确认（除非配置放行）。
+        pol = self.agent_loop.permission_policy
+        if pol.workspace_root is None:
+            import os
+            pol.workspace_root = os.getcwd()
+
         # Skills：把"可用 skills 清单"作为额外 system 块按需注入（渐进式披露）。
         # 用函数延迟求值，使新增/改动 skill 后无需重启即可生效。
         from .core.skills import discover_skills, render_available_skills

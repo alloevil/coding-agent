@@ -89,6 +89,30 @@ class PermissionPolicy:
     # 只读规划模式：只允许 READ 工具 + 下面这些"无副作用交互"工具
     plan_mode: bool = False
     plan_mode_allow: list[str] = field(default_factory=lambda: ["update_plan", "ask_user"])
+    # 外部目录守卫：对工作区根之外的写/执行路径要求确认（参考 opencode
+    # assertExternalDirectory）。workspace_root=None 表示不限制；
+    # allow_external_writes=True 时放行（仅这层；显式 deny 规则仍生效）。
+    workspace_root: str | None = None
+    allow_external_writes: bool = False
+
+    def _is_external_path(self, path: str) -> bool:
+        """判断 path 是否落在 workspace_root 之外（解析符号链接/相对路径后比较）。"""
+        import os
+        root = self.workspace_root
+        if not root:
+            return False
+        try:
+            root_abs = os.path.realpath(root)
+            target_abs = os.path.realpath(path)
+        except (OSError, ValueError):
+            return False
+        # target 必须等于 root 或在 root 之下
+        try:
+            common = os.path.commonpath([root_abs, target_abs])
+        except ValueError:
+            # 不同盘符（Windows）等 → 视为外部
+            return True
+        return common != root_abs
 
     def decide(self, tool_name: str, arguments: dict[str, Any],
                permission: ToolPermission) -> Decision:
@@ -115,6 +139,14 @@ class PermissionPolicy:
         for rule in self.deny_rules:
             if rule.matches(tool_name, arguments):
                 return Decision.DENY
+
+        # 2b. 外部目录守卫：工作区根之外的写/执行路径要求确认（ASK），
+        #     除非 allow_external_writes。READ 不在此限（敏感读取已在第 1 步拦）。
+        if (self.workspace_root and not self.allow_external_writes
+                and permission != ToolPermission.READ):
+            for p in cand:
+                if self._is_external_path(p):
+                    return Decision.ASK
 
         # 3. 显式 allow 规则
         for rule in self.allow_rules:
@@ -155,4 +187,8 @@ class PermissionPolicy:
         )
         if "deny_read_paths" in data:
             policy.deny_read_paths = list(data["deny_read_paths"])
+        if "workspace_root" in data:
+            policy.workspace_root = data["workspace_root"]
+        if "allow_external_writes" in data:
+            policy.allow_external_writes = bool(data["allow_external_writes"])
         return policy
