@@ -386,10 +386,15 @@ class FileSearchTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         pattern = kwargs.get("pattern")
         root = kwargs.get("root", ".")
-        
+
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
-        
+
+        # ripgrep 快路径（rg --files -g pattern）；不可用则回退 Python glob
+        rg_result = await _ripgrep_files(pattern, root)
+        if rg_result is not None:
+            return rg_result
+
         try:
             full_pattern = os.path.join(root, pattern)
             matches = glob_module.glob(full_pattern, recursive=True)
@@ -416,6 +421,39 @@ class FileSearchTool(Tool):
             return result.rstrip()
         except Exception as e:
             return f"Error searching files: {str(e)}"
+
+
+async def _ripgrep_files(pattern: str, root: str) -> str | None:
+    """用 ripgrep 按 glob 列文件；rg 不可用返回 None（回退 Python glob）。"""
+    import shutil
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+    LIMIT = 100
+    # 把 glob 里的 './' 前缀去掉，交给 -g
+    glob_pat = pattern
+    args = [rg, "--files", "-g", glob_pat]
+    for d in DEFAULT_IGNORE_DIRS:
+        args += ["-g", f"!**/{d}/**"]
+    args += ["--", root]
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    files = sorted(ln for ln in out.decode("utf-8", errors="replace").splitlines() if ln.strip())
+    if not files:
+        return f"No files found matching '{pattern}'"
+    truncated = len(files) > LIMIT
+    files = files[:LIMIT]
+    header = (f"Found {len(files)}+ files (showing first {LIMIT}):\n"
+              if truncated else f"Found {len(files)} files:\n")
+    return (header + "\n".join(f"  {f}" for f in files)).rstrip()
 
 
 async def _ripgrep_grep(pattern: str, path: str, include: str | None,
