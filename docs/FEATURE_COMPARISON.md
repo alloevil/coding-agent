@@ -89,4 +89,4 @@ check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested 
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
-- Anthropic-native backend (mimorouter group unreachable with this token).
+- Live validation of the Anthropic backend (no reachable Anthropic endpoint in the dev env; wire-format translation is unit-tested).

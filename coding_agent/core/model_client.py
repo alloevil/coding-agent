@@ -7,7 +7,7 @@
   调用方自行决定如何呈现（CLI 打印 / protocol 发 JSON 事件）
 - API 级别的指数退避重试（区分可重试错误）
 
-OpenAI 兼容（含小米 mify、本地 vLLM 等）。
+OpenAI 兼容（含各类网关、本地 vLLM 等），以及 Anthropic Messages 协议。
 """
 from __future__ import annotations
 

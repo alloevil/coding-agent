@@ -145,7 +145,7 @@ class CodingAgent:
 
         委托给统一的 ModelClient；流式文本通过回调输出。默认打印到终端；
         前端（如 TUI）可通过 self.on_text_delta / on_reasoning_delta 重定向。
-        支持 OpenAI 兼容 API（包括小米 mify）。
+        支持 OpenAI 兼容 API 与 Anthropic 协议。
         """
         if self.on_text_delta is not None:
             on_delta = self.on_text_delta

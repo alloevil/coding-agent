@@ -1297,8 +1297,8 @@ def g(a):
 class BenchmarkRunner:
     """Benchmark 执行器"""
     
-    def __init__(self, api_key: str, model: str = "xiaomi/mimo-v2.5-pro",
-                 base_url: str = "http://model.mify.ai.srv/v1",
+    def __init__(self, api_key: str, model: str = "gpt-4o",
+                 base_url: str = "https://api.openai.com/v1",
                  extra_headers: dict[str, str] | None = None):
         self.api_key = api_key
         self.model = model
@@ -1553,17 +1553,17 @@ async def main():
     """主函数。
 
     支持两种配置来源（优先级从高到低）：
-    - MODEL_API_KEY + MODEL_BASE_URL + MODEL_PRIMARY（小米 mify 环境）
+    - MODEL_API_KEY + MODEL_BASE_URL + MODEL_PRIMARY（OpenAI 兼容网关）
     - OPENAI_API_KEY + OPENAI_API_BASE + CODING_AGENT_MODEL（任意 OpenAI 兼容端点）
     """
     api_key = os.environ.get("MODEL_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     if not api_key:
-        print("Error: set MODEL_API_KEY (mify) or OPENAI_API_KEY (any OpenAI-compatible endpoint)")
+        print("Error: set MODEL_API_KEY or OPENAI_API_KEY (any OpenAI-compatible endpoint)")
         sys.exit(1)
 
     if os.environ.get("MODEL_API_KEY"):
-        base_url = os.environ.get("MODEL_BASE_URL", "http://model.mify.ai.srv/v1")
-        model = os.environ.get("MODEL_PRIMARY", "xiaomi/mimo-v2.5-pro")
+        base_url = os.environ.get("MODEL_BASE_URL", "https://api.openai.com/v1")
+        model = os.environ.get("MODEL_PRIMARY", "gpt-4o")
     else:
         base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
         model = os.environ.get("CODING_AGENT_MODEL", "gpt-4o-mini")

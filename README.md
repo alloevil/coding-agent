@@ -98,10 +98,10 @@ export OPENAI_API_KEY="your-key"
 export OPENAI_API_BASE="https://api.openai.com/v1"
 export CODING_AGENT_MODEL="gpt-4"
 
-# Or use Xiaomi mify
-export LLM_API_KEY="your-mify-key"
-export LLM_BASE_URL="http://model.mify.ai.srv/v1"
-export CODING_AGENT_MODEL="xiaomi/mimo-v2.5-pro"
+# Or any OpenAI-compatible gateway / self-hosted endpoint
+export LLM_API_KEY="your-key"
+export LLM_BASE_URL="https://your-gateway.example.com/v1"
+export CODING_AGENT_MODEL="your-model-name"
 ```
 
 ### Usage
