@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (480 tests passing). Compares our `coding-agent` against:
+Status snapshot (502 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -56,7 +56,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Slash commands | ✅ (built-in + custom) | ✅ (`/init` etc + custom) | ✅ (custom templated) |
 | Hooks (lifecycle) | ✅ (all events fire; config command hooks) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
-| TUI | 🟡 (rich TUI via --tui; CLI + Go protocol) | ✅ | ✅ (rich TUI) |
+| TUI | ✅ (`--tui`: live streaming, in-Live prompts, plan/tools/notice panels) | ✅ | ✅ (rich TUI) |
 | Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`, titled) | ✅ | ✅ |
 | Multimodal (images) | ❌ | ✅ | ✅ |
 | Cost/token budget stop | ✅ (max_total_tokens) | ✅ | 🟡 |
@@ -75,4 +75,3 @@ check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
 - Anthropic-native backend (mimorouter group unreachable with this token).
-- Full interactive TUI parity (rich TUI ships via `--tui`; large separate track).
