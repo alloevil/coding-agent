@@ -192,6 +192,14 @@ def _cmd_agent(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", f"agent:{name}")
 
 
+def _cmd_model(args: str, ctx: CommandContext) -> CommandResult:
+    """切换模型 / provider：/model <model> 或 /model <provider>:<model>（无参=显示当前）。"""
+    spec = args.strip()
+    if not spec:
+        return CommandResult("action", "model:")  # CLI 显示当前 + 可用 provider
+    return CommandResult("action", f"model:{spec}")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -201,6 +209,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "plan-mode": _cmd_plan_mode,
     "agents": _cmd_agents,
     "agent": _cmd_agent,
+    "model": _cmd_model,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,

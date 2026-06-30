@@ -395,6 +395,9 @@ class CodingAgent:
             if act.startswith("agent:"):
                 self._switch_agent(act.split(":", 1)[1])
                 return "continue"
+            if act.startswith("model:"):
+                self._switch_model(act.split(":", 1)[1])
+                return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
@@ -433,6 +436,40 @@ class CodingAgent:
         print(f"🧩 Switched to agent '{name}'"
               + (f" ({profile.model})" if profile.model else "")
               + (f" — {profile.description}" if profile.description else ""))
+
+    def _switch_model(self, spec: str) -> None:
+        """切换模型/provider。spec='' 显示当前；'<model>' 仅换模型；
+        '<provider>:<model>' 或 '<provider>' 切到配置里的 provider。"""
+        providers = getattr(self.config, "providers", {}) or {}
+        if not spec:
+            cur = self.config.model
+            avail = ", ".join(sorted(providers)) if providers else "(none configured)"
+            print(f"Current model: {cur}\nProviders: {avail}\n"
+                  f"Usage: /model <model> | /model <provider>:<model> | /model <provider>")
+            return
+        provider_name, _, model_in_spec = spec.partition(":")
+        if provider_name in providers:
+            p = providers[provider_name]
+            base_url = p.get("base_url") or p.get("api_base_url")
+            if p.get("api_key"):
+                self.model_client.api_key = p["api_key"]
+            if base_url:
+                self.model_client.base_url = base_url
+            if p.get("extra_headers") is not None:
+                self.model_client.extra_headers = p["extra_headers"]
+            new_model = model_in_spec or p.get("model") or self.config.model
+            self.config.model = new_model
+            self.model_client.model = new_model
+            if self.state:
+                self.state.metadata["model"] = new_model
+            print(f"🔀 Switched to provider '{provider_name}' (model {new_model})")
+            return
+        # 不是已知 provider → 当作纯模型名切换（同 provider）
+        self.config.model = spec
+        self.model_client.model = spec
+        if self.state:
+            self.state.metadata["model"] = spec
+        print(f"🔀 Model set to {spec}")
 
     
     async def _handle_event(self, event: AgentEventData) -> None:
