@@ -129,19 +129,11 @@ questions directly; for a simple question, a short answer is best.
         """从环境变量加载配置"""
         config = cls()
         
-        # 优先 MODEL_API_KEY（OpenClaw 环境）
+        # 优先 MODEL_API_KEY（OpenAI 兼容网关环境）
         if os.getenv("MODEL_API_KEY"):
             config.api_key = os.getenv("MODEL_API_KEY", "")
-            config.api_base_url = os.getenv("MODEL_BASE_URL", "http://model.mify.ai.srv/v1")
-            # MODEL_PRIMARY 格式如 "custom-model-mify-ai-srv/xiaomi/mimo-v2.5-pro-mit"
-            primary = os.getenv("MODEL_PRIMARY", "xiaomi/mimo-v2.5-pro")
-            # 提取 xiaomi/xxx 部分
-            if "/xiaomi/" in primary:
-                config.model = "xiaomi/" + primary.split("/xiaomi/")[-1]
-            elif primary.startswith("xiaomi/"):
-                config.model = primary
-            else:
-                config.model = primary
+            config.api_base_url = os.getenv("MODEL_BASE_URL", "https://api.openai.com/v1")
+            config.model = os.getenv("MODEL_PRIMARY", config.model)
         # OpenAI 兼容
         elif os.getenv("OPENAI_API_KEY"):
             config.api_key = os.getenv("OPENAI_API_KEY", "")
@@ -149,12 +141,14 @@ questions directly; for a simple question, a short answer is best.
                 config.api_base_url = os.getenv("OPENAI_API_BASE", "")
             if os.getenv("CODING_AGENT_MODEL"):
                 config.model = os.getenv("CODING_AGENT_MODEL", "")
-        # 小米 mify
+        # 通用 OpenAI 兼容网关 / 自建端点
         elif os.getenv("LLM_API_KEY"):
             config.api_key = os.getenv("LLM_API_KEY", "")
             if os.getenv("LLM_BASE_URL"):
                 config.api_base_url = os.getenv("LLM_BASE_URL", "")
-        
+            if os.getenv("CODING_AGENT_MODEL"):
+                config.model = os.getenv("CODING_AGENT_MODEL", "")
+
         return config
 
     @classmethod

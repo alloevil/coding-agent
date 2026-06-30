@@ -160,5 +160,5 @@ stdin.Write(append(input, '\n'))
 | 变量 | 说明 |
 |------|------|
 | `MODEL_API_KEY` | API key（必需） |
-| `MODEL_BASE_URL` | API 端点（默认 `http://model.mify.ai.srv/v1`） |
-| `MODEL_PRIMARY` | 模型名称（默认 `xiaomi/mimo-v2.5-pro`） |
+| `MODEL_BASE_URL` | API 端点（默认 `https://api.openai.com/v1`） |
+| `MODEL_PRIMARY` | 模型名称（默认 `gpt-4`） |

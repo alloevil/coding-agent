@@ -41,13 +41,13 @@ async def main():
 
     api_key = os.environ.get("MODEL_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
     if not api_key:
-        print("Error: set MODEL_API_KEY (mify) or OPENAI_API_KEY (any OpenAI-compatible endpoint)")
+        print("Error: set MODEL_API_KEY or OPENAI_API_KEY (any OpenAI-compatible endpoint)")
         sys.exit(1)
 
     # 与 benchmark.main() 一致的端点/模型/header 解析
     if os.environ.get("MODEL_API_KEY"):
-        base_url = os.environ.get("MODEL_BASE_URL", "http://model.mify.ai.srv/v1")
-        model = os.environ.get("MODEL_PRIMARY", "xiaomi/mimo-v2.5-pro")
+        base_url = os.environ.get("MODEL_BASE_URL", "https://api.openai.com/v1")
+        model = os.environ.get("MODEL_PRIMARY", "gpt-4o")
     else:
         base_url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
         model = os.environ.get("CODING_AGENT_MODEL", "gpt-4o-mini")
