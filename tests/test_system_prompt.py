@@ -23,6 +23,18 @@ def test_system_prompt_has_production_conventions():
     assert "comment" in p
 
 
+def test_system_prompt_emphasizes_verify_and_persistence():
+    """强化的 verify/persistence 段（对标 opencode beast.txt 的核心要求）。"""
+    p = AgentConfig().system_prompt.lower()
+    # 坚持到完成
+    assert "keep going" in p
+    # 失败必须修、不许带未解决失败收尾
+    assert "fail" in p and "re-run" in p
+    assert "never claim" in p or "unresolved failure" in p
+    # 与框架失败信号呼应（❌ / non-zero exit）
+    assert "non-zero exit" in p
+
+
 def test_system_prompt_lists_core_tools():
     p = AgentConfig().system_prompt
     for tool in ("file_edit", "shell_exec", "grep", "update_plan",
