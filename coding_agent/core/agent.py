@@ -293,10 +293,16 @@ class AgentLoop:
                     event=AgentEvent.COMPACTING,
                     data={"message": "Compacting context..."}
                 )
+                from ..tools.base import HookEvent, HookContext
+                await self.tool_registry.run_hooks(
+                    HookEvent.ON_COMPACT,
+                    HookContext(event=HookEvent.ON_COMPACT,
+                                metadata={"tokens_before": state.get_token_estimate()}),
+                )
                 await self.context_manager.compact(state, self._model_call_fn)
                 # 重新组装 context
                 context = self.context_manager.assemble_context(
-                    state, 
+                    state,
                     self.config.system_prompt
                 )
             
@@ -496,12 +502,28 @@ class AgentLoop:
         """调用模型"""
         if not self._model_call_fn:
             raise RuntimeError("Model call function not set")
-        
+
         # 获取工具定义
         tools = self.tool_registry.get_openai_functions()
-        
+
+        # PRE_MODEL_CALL hook
+        from ..tools.base import HookEvent, HookContext
+        await self.tool_registry.run_hooks(
+            HookEvent.PRE_MODEL_CALL,
+            HookContext(event=HookEvent.PRE_MODEL_CALL,
+                        metadata={"message_count": len(context)}),
+        )
+
         # 调用模型
-        return await self._model_call_fn(context, tools)
+        response = await self._model_call_fn(context, tools)
+
+        # POST_MODEL_CALL hook
+        await self.tool_registry.run_hooks(
+            HookEvent.POST_MODEL_CALL,
+            HookContext(event=HookEvent.POST_MODEL_CALL,
+                        metadata={"has_tool_calls": bool(response.get("tool_calls"))}),
+        )
+        return response
     
     def _needs_permission(self, permission: ToolPermission) -> bool:
         """检查是否需要权限确认"""

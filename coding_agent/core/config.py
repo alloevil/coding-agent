@@ -51,6 +51,8 @@ class AgentConfig:
     permissions: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}
     mcp_servers: dict[str, Any] = field(default_factory=dict)
+    # 生命周期 hook：{"pre_tool_use": [{"command": "..."}], "post_tool_use": [...], ...}
+    hooks: dict[str, Any] = field(default_factory=dict)
     
     # 会话配置
     session_db_path: str = "/tmp/.coding-agent/sessions.db"

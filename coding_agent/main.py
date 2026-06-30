@@ -63,6 +63,13 @@ class CodingAgent:
         register_web_tools()
         self.ask_tool = register_ask_tools(handler=self._ask_user)
 
+        # 配置驱动的命令 hook（settings.json 风格）
+        if getattr(self.config, "hooks", None):
+            from .core.hooks_config import register_config_hooks
+            n = register_config_hooks(self.config.hooks, self.tool_registry)
+            if n:
+                print(f"   Hooks: registered {n} command hook(s)")
+
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
 

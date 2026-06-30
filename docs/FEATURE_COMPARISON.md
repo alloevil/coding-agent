@@ -56,7 +56,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Hooks (lifecycle) | 🟡 (enum exists; only PRE/POST_TOOL fire; no config) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
 | TUI | ❌ (CLI + Go protocol) | ✅ | ✅ (rich TUI) |
-| Session resume (`--resume`) | 🟡 (load_state, no CLI flag) | ✅ | ✅ |
+| Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`) | ✅ | ✅ |
 | Multimodal (images) | ❌ | ✅ | ✅ |
 | Cost/token budget stop | ✅ (max_total_tokens) | ✅ | 🟡 |
 
