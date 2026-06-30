@@ -20,9 +20,12 @@ from .sandbox import ShellSandbox, get_sandbox
 
 class ShellExecTool(Tool):
     """执行 shell 命令（经过安全沙箱）"""
-    
+
     def __init__(self, sandbox: ShellSandbox | None = None):
         self._sandbox = sandbox
+        # 持久化工作目录：cd 在多次 shell_exec 调用之间保留
+        # （None 表示进程默认 cwd）。参考交互式 shell 的行为。
+        self._cwd: str | None = None
     
     @property
     def sandbox(self) -> ShellSandbox:
@@ -70,33 +73,62 @@ class ShellExecTool(Tool):
         command = kwargs.get("command")
         workdir = kwargs.get("workdir")
         timeout = kwargs.get("timeout")
-        
+
         if not command:
             raise ToolExecutionError(self.name, "command is required")
-        
-        # Auto-install dependencies if requirements.txt exists
-        import os
+
+        # 决定本次执行的工作目录：显式 workdir 优先，否则用持久化的 _cwd
         from pathlib import Path
-        
-        # Check if we're running a Python script
+        effective_cwd = workdir or self._cwd
+
+        # Auto-install dependencies if requirements.txt exists
         cmd_parts = command.strip().split()
         is_python_cmd = cmd_parts and cmd_parts[0] in ('python', 'python3', 'py')
-        
         if is_python_cmd:
-            # Check for requirements.txt in working directory
-            work_dir = Path(workdir or ".")
-            req_path = work_dir / "requirements.txt"
-            
+            req_path = Path(effective_cwd or ".") / "requirements.txt"
             if req_path.exists():
-                # Try to install dependencies first
                 try:
                     install_cmd = f"pip install -r {req_path} -q"
-                    await self.sandbox.run(install_cmd, workdir=workdir, timeout=60)
+                    await self.sandbox.run(install_cmd, workdir=effective_cwd, timeout=60)
                 except Exception:
                     pass  # Continue even if install fails
-        
-        # 通过沙箱执行（含预检、并发限制、超时、输出截断、审计）
-        return await self.sandbox.run(command, workdir=workdir, timeout=timeout)
+
+        # 包裹命令：执行后打印最终 $PWD，以便把 cd 的效果持久化到下次调用。
+        # 用一个不太可能与正常输出冲突的哨兵标记分隔。
+        sentinel = "__CWD_AFTER__:"
+        wrapped = f"{command}\n__rc=$?; printf '\\n{sentinel}%s' \"$PWD\"; exit $__rc"
+
+        result = await self.sandbox.run(wrapped, workdir=effective_cwd, timeout=timeout)
+
+        # 解析尾部的 cwd 哨兵，更新持久 cwd，并从展示输出里剥离
+        new_cwd = self._extract_and_strip_cwd(result, sentinel)
+        if new_cwd is not None:
+            self._cwd = new_cwd
+            return self._strip_sentinel(result, sentinel)
+        return result
+
+    def _extract_and_strip_cwd(self, output: str, sentinel: str) -> str | None:
+        """从输出末尾解析 cwd 哨兵，返回新 cwd（解析不到返回 None）。"""
+        idx = output.rfind(sentinel)
+        if idx == -1:
+            return None
+        tail = output[idx + len(sentinel):].strip()
+        # 哨兵后应是一个绝对路径
+        if tail.startswith("/"):
+            # 只取第一行（防御截断/多余输出）
+            return tail.splitlines()[0].strip()
+        return None
+
+    def _strip_sentinel(self, output: str, sentinel: str) -> str:
+        """从展示输出里移除 cwd 哨兵行。"""
+        idx = output.rfind(sentinel)
+        if idx == -1:
+            return output
+        # 哨兵前我们额外加了一个 '\n'，一并去掉
+        cleaned = output[:idx]
+        if cleaned.endswith("\n"):
+            cleaned = cleaned[:-1]
+        return cleaned
 
 
 class SandboxStatusTool(Tool):

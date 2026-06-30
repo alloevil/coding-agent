@@ -196,6 +196,9 @@ class AgentLoop:
         # 模型调用函数（需要外部注入）
         self._model_call_fn: Any = None
 
+        # 累计 token 用量查询（可选；返回 int）。用于 token 预算停止。
+        self._token_usage_fn: Any = None
+
         # 权限确认回调
         self._permission_handler: PermissionHandler | None = None
 
@@ -212,6 +215,13 @@ class AgentLoop:
         # ---- 工具回滚 ----
         self.rollback_log = RollbackLog()
 
+        # ---- 细粒度权限策略 ----
+        from .permissions import PermissionPolicy
+        self.permission_policy = PermissionPolicy.from_config(
+            getattr(config, "permissions", None),
+            auto_approve=config.auto_approve,
+        )
+
         # 自动注册子代理工具 + 回滚工具。
         # 子代理传 register_builtin_tools=False，避免用自己的引用覆盖父代理
         # 已注册的 agent_spawn/agent_parallel（它们共享同一个 tool_registry）。
@@ -223,6 +233,24 @@ class AgentLoop:
     def set_model_call_fn(self, fn: Any) -> None:
         """设置模型调用函数"""
         self._model_call_fn = fn
+
+    def set_token_usage_fn(self, fn: Any) -> None:
+        """设置累计 token 用量查询函数（返回 int），用于 token 预算停止。"""
+        self._token_usage_fn = fn
+
+    def set_extra_system_provider(self, fn: Any) -> None:
+        """设置额外 system 块提供者（() -> str），如可用 skills 清单。"""
+        self.context_manager._extra_system_provider = fn
+
+    def _over_token_budget(self) -> bool:
+        """是否已超出配置的 token 预算。"""
+        budget = getattr(self.config, "max_total_tokens", 0) or 0
+        if budget <= 0 or self._token_usage_fn is None:
+            return False
+        try:
+            return self._token_usage_fn() >= budget
+        except Exception:
+            return False
     
     def set_permission_handler(self, handler: PermissionHandler) -> None:
         """设置权限确认回调"""
@@ -248,6 +276,13 @@ class AgentLoop:
         
         # 2. 主循环
         while not state.should_stop():
+            # token 预算停止：超出则结束本轮，避免成本失控
+            if self._over_token_budget():
+                yield AgentEventData(
+                    event=AgentEvent.DONE,
+                    data={"turns": state.turn_count, "reason": "token_budget_exceeded"},
+                )
+                break
             state.increment_turn()
             
             # 3. Context assembly
@@ -262,10 +297,16 @@ class AgentLoop:
                     event=AgentEvent.COMPACTING,
                     data={"message": "Compacting context..."}
                 )
+                from ..tools.base import HookEvent, HookContext
+                await self.tool_registry.run_hooks(
+                    HookEvent.ON_COMPACT,
+                    HookContext(event=HookEvent.ON_COMPACT,
+                                metadata={"tokens_before": state.get_token_estimate()}),
+                )
                 await self.context_manager.compact(state, self._model_call_fn)
                 # 重新组装 context
                 context = self.context_manager.assemble_context(
-                    state, 
+                    state,
                     self.config.system_prompt
                 )
             
@@ -344,13 +385,17 @@ class AgentLoop:
             self.session_store.save_state(state.session_id, state)
 
     def _is_parallelizable(self, tool_call: ToolCall) -> bool:
-        """工具是否可并发执行：存在、READ 权限、且当前配置下自动放行。"""
+        """工具是否可并发执行：存在、READ 权限、且策略判定为 ALLOW（不需询问）。"""
+        from .permissions import Decision
         tool = self.tool_registry.get_tool(tool_call.name)
         if tool is None:
             return False
         if tool.permission != ToolPermission.READ:
             return False
-        return not self._needs_permission(tool.permission)
+        decision = self.permission_policy.decide(
+            tool_call.name, tool_call.arguments, tool.permission
+        )
+        return decision == Decision.ALLOW
 
     async def _dispatch_one(
         self, tool_call: ToolCall, state: AgentState
@@ -365,53 +410,64 @@ class AgentLoop:
             },
         )
 
-        # 9. Permission gate
+        # 9. Permission gate（细粒度策略：DENY / ALLOW / ASK）
+        from .permissions import Decision
         tool = self.tool_registry.get_tool(tool_call.name)
         if not tool:
             result = f"Error: Tool '{tool_call.name}' not found"
             is_error = True
-        elif self._needs_permission(tool.permission):
-            yield AgentEventData(
-                event=AgentEvent.PERMISSION_REQUEST,
-                data={
-                    "id": tool_call.id,
-                    "name": tool_call.name,
-                    "arguments": tool_call.arguments,
-                    "permission": tool.permission.value,
-                },
+        else:
+            decision = self.permission_policy.decide(
+                tool_call.name, tool_call.arguments, tool.permission
             )
-            if self._permission_handler:
-                try:
-                    approved = await self._permission_handler(
-                        tool_call.name, tool_call.arguments
-                    )
-                except Exception as e:
-                    approved = False
-                    yield AgentEventData(
-                        event=AgentEvent.ERROR,
-                        data={"error": f"Permission handler error: {e}"},
-                    )
-            else:
-                approved = False
 
-            if approved:
+            if decision == Decision.DENY:
+                result = (
+                    f"Permission denied by policy for '{tool_call.name}' "
+                    f"(arguments: {tool_call.arguments})"
+                )
+                is_error = True
+            elif decision == Decision.ASK:
+                yield AgentEventData(
+                    event=AgentEvent.PERMISSION_REQUEST,
+                    data={
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                        "permission": tool.permission.value,
+                    },
+                )
+                if self._permission_handler:
+                    try:
+                        approved = await self._permission_handler(
+                            tool_call.name, tool_call.arguments
+                        )
+                    except Exception as e:
+                        approved = False
+                        yield AgentEventData(
+                            event=AgentEvent.ERROR,
+                            data={"error": f"Permission handler error: {e}"},
+                        )
+                else:
+                    approved = False
+
+                if approved:
+                    result, is_error = "", False
+                    async for item in self._recovery_events(tool_call, state):
+                        if isinstance(item, tuple):
+                            result, is_error = item
+                        else:
+                            yield item
+                else:
+                    result = f"Permission denied for tool '{tool_call.name}'"
+                    is_error = True
+            else:  # Decision.ALLOW
                 result, is_error = "", False
                 async for item in self._recovery_events(tool_call, state):
                     if isinstance(item, tuple):
                         result, is_error = item
                     else:
                         yield item
-            else:
-                result = f"Permission denied for tool '{tool_call.name}'"
-                is_error = True
-        else:
-            # 自动允许（READ 权限）
-            result, is_error = "", False
-            async for item in self._recovery_events(tool_call, state):
-                if isinstance(item, tuple):
-                    result, is_error = item
-                else:
-                    yield item
 
         state.add_tool_result(tool_call.id, result, is_error)
         yield AgentEventData(
@@ -450,12 +506,28 @@ class AgentLoop:
         """调用模型"""
         if not self._model_call_fn:
             raise RuntimeError("Model call function not set")
-        
+
         # 获取工具定义
         tools = self.tool_registry.get_openai_functions()
-        
+
+        # PRE_MODEL_CALL hook
+        from ..tools.base import HookEvent, HookContext
+        await self.tool_registry.run_hooks(
+            HookEvent.PRE_MODEL_CALL,
+            HookContext(event=HookEvent.PRE_MODEL_CALL,
+                        metadata={"message_count": len(context)}),
+        )
+
         # 调用模型
-        return await self._model_call_fn(context, tools)
+        response = await self._model_call_fn(context, tools)
+
+        # POST_MODEL_CALL hook
+        await self.tool_registry.run_hooks(
+            HookEvent.POST_MODEL_CALL,
+            HookContext(event=HookEvent.POST_MODEL_CALL,
+                        metadata={"has_tool_calls": bool(response.get("tool_calls"))}),
+        )
+        return response
     
     def _needs_permission(self, permission: ToolPermission) -> bool:
         """检查是否需要权限确认"""
@@ -655,7 +727,29 @@ class AgentLoop:
         elif tool_name == "shell_exec":
             rollback_data["command"] = arguments.get("command", "")
             rollback_data["workdir"] = arguments.get("workdir")
-        
+
+        elif tool_name == "apply_patch":
+            # 解析补丁，快照每个受影响文件的写前内容（add 记 None=新建）
+            from pathlib import Path
+            try:
+                from ..tools.patch_ops import parse_patch
+                ops = parse_patch(arguments.get("patch", ""))
+                root = Path(arguments.get("root", "."))
+                snapshots: dict[str, str | None] = {}
+                for op in ops:
+                    fp = root / op["path"]
+                    key = str(fp)
+                    if op["op"] == "add":
+                        snapshots[key] = None  # 原本不存在
+                    else:
+                        try:
+                            snapshots[key] = fp.read_text(encoding="utf-8")
+                        except OSError:
+                            snapshots[key] = None
+                rollback_data["snapshots"] = snapshots
+            except Exception:
+                return  # 补丁无法解析则不记录（apply 也会失败）
+
         else:
             # 其他工具不记录回滚
             return
@@ -714,7 +808,24 @@ class AgentLoop:
             elif record.tool_name == "shell_exec":
                 command = record.rollback_data.get("command", "")
                 return f"Cannot rollback shell_exec (command: {command}). Manual intervention may be required."
-            
+
+            elif record.tool_name == "apply_patch":
+                from pathlib import Path
+                snapshots = record.rollback_data.get("snapshots", {})
+                restored, deleted = 0, 0
+                for key, original in snapshots.items():
+                    p = Path(key)
+                    if original is None:
+                        # 原本不存在 -> 删除新增的文件
+                        if p.exists():
+                            p.unlink()
+                            deleted += 1
+                    else:
+                        p.write_text(original, encoding="utf-8")
+                        restored += 1
+                return (f"Rolled back apply_patch: restored {restored} file(s), "
+                        f"deleted {deleted} added file(s)")
+
             else:
                 return f"Error: Rollback not supported for tool '{record.tool_name}'"
         

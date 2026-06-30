@@ -29,6 +29,59 @@ DEFAULT_IGNORE_DIRS = frozenset({
 })
 
 
+# 读取追踪：记录每个被 file_read 读过的文件的 (mtime, size)，
+# 供 file_edit/apply_patch 做"读后被改"陈旧检测（advisory，不阻断）。
+_READ_TRACKER: dict[str, tuple[float, int]] = {}
+
+
+def _record_read(path: str) -> None:
+    try:
+        st = Path(path).stat()
+        _READ_TRACKER[str(Path(path).resolve())] = (st.st_mtime, st.st_size)
+    except OSError:
+        pass
+
+
+def _staleness_warning(path: str) -> str:
+    """若文件自上次 file_read 后在磁盘上变化过，返回一段提醒（否则空串）。"""
+    try:
+        key = str(Path(path).resolve())
+    except OSError:
+        return ""
+    rec = _READ_TRACKER.get(key)
+    if rec is None:
+        return ""  # 没读过就不提醒（首次写/盲改不在此范围）
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return ""
+    if (st.st_mtime, st.st_size) != rec:
+        return ("\n⚠️ Note: this file changed on disk since you last read it; "
+                "your edit was applied to the current contents. Re-read if unsure.")
+    return ""
+
+
+def _syntax_warning(path: str, content: str) -> str:
+    """
+    对刚写入的文件做尽力而为的语法校验，返回一段警告后缀（无问题则空串）。
+
+    当前支持 Python（ast.parse）。设计为非阻塞：写入照常完成，只是在
+    引入语法错误时附加提示，让模型有机会立刻修复，而不是等运行时才发现。
+    """
+    if not path.endswith(".py"):
+        return ""
+    import ast
+    try:
+        ast.parse(content)
+        return ""
+    except SyntaxError as e:
+        return (
+            f"\n⚠️ Warning: '{path}' has a Python syntax error after this write "
+            f"(line {e.lineno}: {e.msg}). The write succeeded, but you likely "
+            f"need to fix it."
+        )
+
+
 def _is_ignored(path: Path, ignore_dirs: frozenset[str]) -> bool:
     """路径中是否包含任一被忽略的目录名。"""
     return any(part in ignore_dirs for part in path.parts)
@@ -112,21 +165,39 @@ class FileReadTool(Tool):
                 return f"Error: '{path}' appears to be a binary file; cannot display as text"
 
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+                all_lines = f.readlines()
 
-            # 应用 offset 和 limit
+            total_lines = len(all_lines)
             start = max(0, offset - 1)  # 转换为 0-indexed
-            if limit:
-                lines = lines[start:start + limit]
-            else:
-                lines = lines[start:]
+
+            # 默认分页：未指定 limit 时，单次最多返回 DEFAULT_PAGE 行，
+            # 并在末尾告知如何读取下一页（避免一次性灌入超长文件）。
+            DEFAULT_PAGE = 2000
+            page = limit if limit else DEFAULT_PAGE
+            lines = all_lines[start:start + page]
+            end = start + len(lines)  # 0-indexed exclusive
 
             # 添加行号
             result = []
             for i, line in enumerate(lines, start=start + 1):
                 result.append(f"{i:4d} | {line.rstrip()}")
+            body = "\n".join(result)
 
-            return "\n".join(result)
+            # 分页脚注：还有更多内容时提示下一页参数
+            if end < total_lines:
+                remaining = total_lines - end
+                body += (
+                    f"\n\n... {remaining} more line(s). "
+                    f"Read next page with offset={end + 1}"
+                    + (f", limit={page}." if limit else ".")
+                )
+            _record_read(path)
+            try:
+                from ..context.project_context import note_touched_path
+                note_touched_path(path)
+            except Exception:
+                pass
+            return body
         except Exception as e:
             return f"Error reading file: {str(e)}"
 
@@ -179,7 +250,7 @@ class FileWriteTool(Tool):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
             
-            return f"Successfully wrote {len(content)} bytes to '{path}'"
+            return f"Successfully wrote {len(content)} bytes to '{path}'" + _syntax_warning(path, content)
         except Exception as e:
             return f"Error writing file: {str(e)}"
 
@@ -252,31 +323,30 @@ class FileEditTool(Tool):
 
             content = file_path.read_text(encoding="utf-8")
 
-            count = content.count(old_text)
-            if count == 0:
-                return f"Error: old_text not found in '{path}'"
-            if count > 1 and not replace_all:
-                # 给出每个匹配所在行号，帮助模型消歧
-                line_nums = []
-                idx = 0
-                for ln, line in enumerate(content.splitlines(), 1):
-                    if old_text.splitlines()[0] in line:
-                        line_nums.append(ln)
-                hint = f" (matches near lines {line_nums[:10]})" if line_nums else ""
-                return (
-                    f"Error: old_text found {count} times in '{path}', must be unique. "
-                    f"Add more surrounding context, or pass replace_all=true to replace "
-                    f"all occurrences.{hint}"
-                )
+            # 多策略匹配：精确 → 行级 strip → 空白归一 → 缩进无关 → 块锚点。
+            # 比精确匹配更鲁棒（容忍空白/缩进漂移），同时保持唯一性约束。
+            from ..core.text_replace import fuzzy_replace, ReplaceError
+            try:
+                new_content = fuzzy_replace(content, old_text, new_text, replace_all=replace_all)
+            except ReplaceError as e:
+                msg = str(e)
+                # 多处匹配时附带行号提示，帮助模型消歧
+                if "multiple matches" in msg:
+                    first = old_text.splitlines()[0] if old_text.splitlines() else old_text
+                    line_nums = [ln for ln, line in enumerate(content.splitlines(), 1)
+                                 if first.strip() and first.strip() in line]
+                    hint = f" (near lines {line_nums[:10]})" if line_nums else ""
+                    return f"Error: {msg}{hint}"
+                return f"Error: {msg}"
 
-            if replace_all:
-                new_content = content.replace(old_text, new_text)
-                file_path.write_text(new_content, encoding="utf-8")
-                return f"Successfully edited '{path}' ({count} occurrences replaced)"
+            # 写前检测：文件自上次 file_read 后是否被改过（advisory）
+            stale = _staleness_warning(path)
 
-            new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
-            return f"Successfully edited '{path}'"
+            _record_read(path)  # 编辑后刷新追踪基线
+            suffix = " (replace_all)" if replace_all else ""
+            return (f"Successfully edited '{path}'{suffix}"
+                    + _syntax_warning(path, new_content) + stale)
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
@@ -316,10 +386,15 @@ class FileSearchTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         pattern = kwargs.get("pattern")
         root = kwargs.get("root", ".")
-        
+
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
-        
+
+        # ripgrep 快路径（rg --files -g pattern）；不可用则回退 Python glob
+        rg_result = await _ripgrep_files(pattern, root)
+        if rg_result is not None:
+            return rg_result
+
         try:
             full_pattern = os.path.join(root, pattern)
             matches = glob_module.glob(full_pattern, recursive=True)
@@ -346,6 +421,91 @@ class FileSearchTool(Tool):
             return result.rstrip()
         except Exception as e:
             return f"Error searching files: {str(e)}"
+
+
+async def _ripgrep_files(pattern: str, root: str) -> str | None:
+    """用 ripgrep 按 glob 列文件；rg 不可用返回 None（回退 Python glob）。"""
+    import shutil
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+    LIMIT = 100
+    # 把 glob 里的 './' 前缀去掉，交给 -g
+    glob_pat = pattern
+    args = [rg, "--files", "-g", glob_pat]
+    for d in DEFAULT_IGNORE_DIRS:
+        args += ["-g", f"!**/{d}/**"]
+    args += ["--", root]
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    files = sorted(ln for ln in out.decode("utf-8", errors="replace").splitlines() if ln.strip())
+    if not files:
+        return f"No files found matching '{pattern}'"
+    truncated = len(files) > LIMIT
+    files = files[:LIMIT]
+    header = (f"Found {len(files)}+ files (showing first {LIMIT}):\n"
+              if truncated else f"Found {len(files)} files:\n")
+    return (header + "\n".join(f"  {f}" for f in files)).rstrip()
+
+
+async def _ripgrep_grep(pattern: str, path: str, include: str | None,
+                        include_ignored: bool, context_lines: int = 0) -> str | None:
+    """
+    用 ripgrep 执行内容搜索；rg 不可用返回 None（让调用方回退 Python 实现）。
+
+    rg 原生尊重 .gitignore、速度快。context_lines>0 时用 -C 带上下文。
+    """
+    import shutil
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+
+    LIMIT = 100
+    args = [rg, "--line-number", "--no-heading", "--color=never",
+            "--ignore-case", "-m", str(LIMIT)]
+    if context_lines > 0:
+        args += ["-C", str(min(context_lines, 10))]
+    if include:
+        args += ["--glob", include]
+    if include_ignored:
+        args += ["--no-ignore", "--hidden"]
+    else:
+        # 与 Python 实现一致：显式排除噪音目录（rg 的 .gitignore 之外再加一层）
+        for d in DEFAULT_IGNORE_DIRS:
+            args += ["--glob", f"!**/{d}/**"]
+    args += ["--", pattern, path]
+
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except (FileNotFoundError, asyncio.TimeoutError, OSError):
+        return None
+
+    # rg 退出码：0=有匹配，1=无匹配，2=错误。2 时回退 Python（如正则语法差异）
+    if proc.returncode == 1:
+        return f"No matches found for '{pattern}'"
+    if proc.returncode not in (0, 1):
+        return None
+
+    lines = out.decode("utf-8", errors="replace").splitlines()
+    lines = [ln for ln in lines if ln.strip()][:LIMIT]
+    if not lines:
+        return f"No matches found for '{pattern}'"
+    result = f"Found {len(lines)} matches:\n" + "\n".join(lines)
+    if len(lines) >= LIMIT:
+        result += f"\n... (truncated, showing first {LIMIT} matches)"
+    return result
 
 
 class GrepTool(Tool):
@@ -379,6 +539,10 @@ class GrepTool(Tool):
                 "include_ignored": {
                     "type": "boolean",
                     "description": "Also search ignored dirs (.git, node_modules, venv, build...). Default false."
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Lines of context to show before/after each match (like grep -C). Default 0."
                 }
             },
             "required": ["pattern"]
@@ -395,9 +559,15 @@ class GrepTool(Tool):
         path = kwargs.get("path", ".")
         include = kwargs.get("include")
         include_ignored = kwargs.get("include_ignored", False)
+        context_lines = int(kwargs.get("context_lines") or 0)
 
         if not pattern:
             raise ToolExecutionError(self.name, "pattern is required")
+
+        # 优先用 ripgrep（快、原生尊重 .gitignore）；不可用则回退 Python 实现
+        rg_result = await _ripgrep_grep(pattern, path, include, include_ignored, context_lines)
+        if rg_result is not None:
+            return rg_result
 
         ignore_dirs = frozenset() if include_ignored else DEFAULT_IGNORE_DIRS
 
@@ -413,24 +583,33 @@ class GrepTool(Tool):
             for file_path in files:
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    for i, line in enumerate(content.splitlines(), 1):
+                    flines = content.splitlines()
+                    for i, line in enumerate(flines, 1):
                         if re.search(pattern, line, re.IGNORECASE):
-                            results.append(f"{file_path}:{i}: {line.rstrip()}")
+                            if context_lines > 0:
+                                lo = max(0, i - 1 - context_lines)
+                                hi = min(len(flines), i + context_lines)
+                                for j in range(lo, hi):
+                                    marker = ":" if (j + 1) == i else "-"
+                                    results.append(f"{file_path}:{j+1}{marker} {flines[j].rstrip()}")
+                                results.append("--")
+                            else:
+                                results.append(f"{file_path}:{i}: {line.rstrip()}")
                             if len(results) >= 100:
                                 break
                 except (UnicodeDecodeError, PermissionError):
                     continue
-                
+
                 if len(results) >= 100:
                     break
-            
+
             if not results:
                 return f"No matches found for '{pattern}'"
-            
+
             result = f"Found {len(results)} matches:\n" + "\n".join(results)
             if len(results) >= 100:
                 result += "\n... (truncated, showing first 100 matches)"
-            
+
             return result
         except Exception as e:
             return f"Error searching: {str(e)}"
@@ -459,6 +638,10 @@ class ListFilesTool(Tool):
                 "recursive": {
                     "type": "boolean",
                     "description": "Whether to list files recursively (default: false)"
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "In recursive mode, include noise dirs (.git/node_modules/...). Default false."
                 }
             },
             "required": []
@@ -471,14 +654,21 @@ class ListFilesTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         path = kwargs.get("path", ".")
         recursive = kwargs.get("recursive", False)
-        
+        include_ignored = kwargs.get("include_ignored", False)
+
         try:
             path_obj = Path(path)
             if not path_obj.exists():
                 return f"Error: Directory '{path}' does not exist"
-            
+
             if recursive:
                 files = sorted(path_obj.rglob("*"))
+                # 递归时跳过噪音目录（.git/node_modules/venv/...）
+                if not include_ignored:
+                    files = [f for f in files
+                             if not _is_ignored(f.relative_to(path_obj)
+                                                if f.is_relative_to(path_obj) else f,
+                                                DEFAULT_IGNORE_DIRS)]
             else:
                 files = sorted(path_obj.iterdir())
             

@@ -177,6 +177,7 @@ def apply_patch(text: str, root: str | Path = ".") -> str:
 
     # 第二阶段：落盘
     summary: list[str] = []
+    warnings: list[str] = []
     for kind, path, new_content in planned:
         if kind == "add":
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,8 +189,14 @@ def apply_patch(text: str, root: str | Path = ".") -> str:
         elif kind == "update":
             path.write_text(new_content or "", encoding="utf-8")
             summary.append(f"  updated {path}")
+        # 对新增/修改的 .py 文件做语法校验
+        if kind in ("add", "update"):
+            from .file_ops import _syntax_warning
+            w = _syntax_warning(str(path), new_content or "")
+            if w:
+                warnings.append(w)
 
-    return "Applied patch:\n" + "\n".join(summary)
+    return "Applied patch:\n" + "\n".join(summary) + "".join(warnings)
 
 
 # ── 工具封装 ──────────────────────────────────────────────────────────────

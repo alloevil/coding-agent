@@ -207,3 +207,57 @@ async def test_prompt_cache_key_sent_when_set(patch_async_client):
 async def test_cache_hit_rate_zero_when_no_calls():
     client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
     assert client.cache_hit_rate == 0.0
+
+
+@pytest.mark.asyncio
+async def test_reasoning_captured_from_stream(patch_async_client):
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "Let me think. "}}]},
+        {"choices": [{"delta": {"reasoning_content": "12*9=108. "}}]},
+        {"choices": [{"delta": {"content": "108"}}]},
+    ]
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=_sse(chunks)))
+    patch_async_client(transport)
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    rparts, tparts = [], []
+    result = await client.complete([{"role": "user", "content": "12*9?"}],
+                                   on_text_delta=tparts.append,
+                                   on_reasoning_delta=rparts.append)
+    assert result["content"] == "108"
+    assert result["reasoning"] == "Let me think. 12*9=108. "
+    assert rparts == ["Let me think. ", "12*9=108. "]
+    assert tparts == ["108"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_field_alias_in_stream(patch_async_client):
+    # 部分网关用 "reasoning" 而非 "reasoning_content"
+    chunks = [{"choices": [{"delta": {"reasoning": "hmm"}}]},
+              {"choices": [{"delta": {"content": "ok"}}]}]
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=_sse(chunks)))
+    patch_async_client(transport)
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    result = await client.complete([{"role": "user", "content": "hi"}])
+    assert result["reasoning"] == "hmm"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_from_nonstream(patch_async_client):
+    body = {"choices": [{"message": {"content": "done", "reasoning_content": "because"}}]}
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+    patch_async_client(transport)
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    result = await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert result["reasoning"] == "because"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_tokens_tracked(patch_async_client):
+    body = {"choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 70,
+                      "completion_tokens_details": {"reasoning_tokens": 64}}}
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json=body))
+    patch_async_client(transport)
+    client = ModelClient(api_key="k", base_url="http://x/v1", model="m")
+    await client.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert client.total_reasoning_tokens == 64

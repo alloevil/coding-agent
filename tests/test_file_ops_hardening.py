@@ -36,8 +36,8 @@ async def test_edit_ambiguous_reports_lines(tmp_path):
     f = tmp_path / "c.py"
     f.write_text("x = 1\ny = 1\nx = 1\n")
     out = await FileEditTool().execute(path=str(f), old_text="x = 1", new_text="x = 2")
-    assert "found 2 times" in out
-    assert "replace_all" in out
+    assert "multiple matches" in out
+    assert "near lines" in out
 
 
 @pytest.mark.asyncio
@@ -46,7 +46,7 @@ async def test_edit_replace_all(tmp_path):
     f.write_text("a = 1\na = 1\n")
     out = await FileEditTool().execute(path=str(f), old_text="a = 1",
                                        new_text="a = 2", replace_all=True)
-    assert "2 occurrences" in out
+    assert "Successfully edited" in out
     assert f.read_text() == "a = 2\na = 2\n"
 
 
@@ -65,3 +65,46 @@ async def test_edit_unique_still_works(tmp_path):
     out = await FileEditTool().execute(path=str(f), old_text="world", new_text="there")
     assert "Successfully edited" in out
     assert f.read_text() == "hello there\n"
+
+
+@pytest.mark.asyncio
+async def test_read_paginates_large_file(tmp_path):
+    f = tmp_path / "big.py"
+    f.write_text("\n".join(f"line{i}" for i in range(5000)) + "\n")
+    out = await FileReadTool().execute(path=str(f))
+    # 默认每页 2000 行
+    assert "   1 | line0" in out
+    assert "2000 | line1999" in out
+    assert "line2000" not in out
+    # 脚注提示下一页
+    assert "more line(s)" in out
+    assert "offset=2001" in out
+
+
+@pytest.mark.asyncio
+async def test_read_next_page(tmp_path):
+    f = tmp_path / "big.py"
+    f.write_text("\n".join(f"line{i}" for i in range(5000)) + "\n")
+    out = await FileReadTool().execute(path=str(f), offset=2001)
+    assert "2001 | line2000" in out
+    assert "4000 | line3999" in out
+    assert "offset=4001" in out
+
+
+@pytest.mark.asyncio
+async def test_read_small_file_no_footer(tmp_path):
+    f = tmp_path / "small.py"
+    f.write_text("a\nb\nc\n")
+    out = await FileReadTool().execute(path=str(f))
+    assert "more line(s)" not in out
+    assert "   3 | c" in out
+
+
+@pytest.mark.asyncio
+async def test_read_explicit_limit_keeps_limit_in_footer(tmp_path):
+    f = tmp_path / "big.py"
+    f.write_text("\n".join(f"L{i}" for i in range(100)) + "\n")
+    out = await FileReadTool().execute(path=str(f), offset=1, limit=10)
+    assert "  10 | L9" in out
+    assert "L10" not in out
+    assert "offset=11, limit=10" in out

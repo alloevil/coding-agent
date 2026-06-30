@@ -64,15 +64,19 @@ class ModelClient:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_cached_tokens = 0
+        self.total_reasoning_tokens = 0
 
     def _record_usage(self, usage: dict[str, Any] | None) -> None:
-        """累计 token 用量，含 prompt 缓存命中。"""
+        """累计 token 用量，含 prompt 缓存命中与推理 token。"""
         if not usage:
             return
         self.total_prompt_tokens += usage.get("prompt_tokens", 0) or 0
         self.total_completion_tokens += usage.get("completion_tokens", 0) or 0
         details = usage.get("prompt_tokens_details") or {}
         self.total_cached_tokens += details.get("cached_tokens", 0) or 0
+        # 推理 token（gpt-5/o 系列在 completion_tokens_details.reasoning_tokens 报告）
+        cdetails = usage.get("completion_tokens_details") or {}
+        self.total_reasoning_tokens += cdetails.get("reasoning_tokens", 0) or 0
 
     @property
     def cache_hit_rate(self) -> float:
@@ -119,19 +123,23 @@ class ModelClient:
         tools: list[dict[str, Any]] | None = None,
         *,
         on_text_delta: TextDeltaHandler | None = None,
+        on_reasoning_delta: TextDeltaHandler | None = None,
         stream: bool = True,
     ) -> dict[str, Any]:
         """
-        调用模型，返回 {"content": str, "tool_calls": list}。
+        调用模型，返回 {"content": str, "tool_calls": list, "reasoning": str, "usage": dict}。
 
-        带 API 级别的指数退避重试。流式模式下每段文本通过 on_text_delta 回调。
+        带 API 级别的指数退避重试。流式模式下每段正文通过 on_text_delta 回调、
+        每段推理文本通过 on_reasoning_delta 回调（OpenAI 兼容的 reasoning_content）。
         """
         last_exc: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
             try:
                 if stream:
-                    return await self._complete_stream(messages, tools, on_text_delta)
+                    return await self._complete_stream(
+                        messages, tools, on_text_delta, on_reasoning_delta
+                    )
                 return await self._complete_nonstream(messages, tools)
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
@@ -157,13 +165,16 @@ class ModelClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         on_text_delta: TextDeltaHandler | None,
+        on_reasoning_delta: TextDeltaHandler | None = None,
     ) -> dict[str, Any]:
         payload = self._payload(messages, tools, stream=True)
         # 请求在流末尾附带 usage（OpenAI 兼容），用于缓存/成本观测
         payload["stream_options"] = {"include_usage": True}
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls_data: list[dict[str, Any]] = []
         usage: dict[str, Any] = {}
+
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
@@ -200,6 +211,13 @@ class ModelClient:
                         if on_text_delta is not None:
                             on_text_delta(chunk)
 
+                    # 推理增量：不同网关用 reasoning_content（DeepSeek 约定）或 reasoning
+                    rchunk = delta.get("reasoning_content") or delta.get("reasoning")
+                    if rchunk:
+                        reasoning_parts.append(rchunk)
+                        if on_reasoning_delta is not None:
+                            on_reasoning_delta(rchunk)
+
                     if delta.get("tool_calls"):
                         _accumulate_tool_calls(tool_calls_data, delta["tool_calls"])
 
@@ -207,6 +225,7 @@ class ModelClient:
         return {
             "content": "".join(content_parts),
             "tool_calls": tool_calls_data,
+            "reasoning": "".join(reasoning_parts),
             "usage": usage,
         }
 
@@ -227,12 +246,13 @@ class ModelClient:
 
         choices = data.get("choices", [])
         if not choices:
-            return {"content": "", "tool_calls": [], "usage": data.get("usage", {})}
+            return {"content": "", "tool_calls": [], "reasoning": "", "usage": data.get("usage", {})}
         message = choices[0].get("message", {})
         self._record_usage(data.get("usage"))
         return {
             "content": message.get("content") or "",
             "tool_calls": message.get("tool_calls") or [],
+            "reasoning": message.get("reasoning_content") or message.get("reasoning") or "",
             "usage": data.get("usage", {}),
         }
 

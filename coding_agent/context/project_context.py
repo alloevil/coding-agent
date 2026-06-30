@@ -32,6 +32,19 @@ def _global_context_path() -> Path:
     return base / "AGENTS.md"
 
 
+# agent 在会话中读过文件的目录集合：用于动态发现嵌套的 AGENTS.md/CLAUDE.md
+# （参考 opencode instruction.ts：进到哪个子目录就带上那里的约定）。
+_TOUCHED_DIRS: set[str] = set()
+
+
+def note_touched_path(path: str) -> None:
+    """登记 agent 读/写过的文件路径，记录其所在目录。"""
+    try:
+        _TOUCHED_DIRS.add(str(Path(path).resolve().parent))
+    except OSError:
+        pass
+
+
 def _find_repo_root(start: Path) -> Path | None:
     """从 start 向上查找包含 .git 的目录；找不到返回 None。"""
     cur = start.resolve()
@@ -93,6 +106,18 @@ def discover_context_files(cwd: str | os.PathLike[str] | None = None) -> list[Pa
         for fname in CONTEXT_FILENAMES:
             p = d / fname
             rp = p.resolve()
+            if p.is_file() and rp not in seen:
+                ordered.append(p)
+                seen.add(rp)
+
+    # 4. agent 在会话中读过的目录里的嵌套上下文文件（动态发现）
+    for d in sorted(_TOUCHED_DIRS):
+        for fname in CONTEXT_FILENAMES:
+            p = Path(d) / fname
+            try:
+                rp = p.resolve()
+            except OSError:
+                continue
             if p.is_file() and rp not in seen:
                 ordered.append(p)
                 seen.add(rp)

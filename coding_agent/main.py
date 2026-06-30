@@ -41,7 +41,7 @@ class CodingAgent:
     """
     
     def __init__(self, config: AgentConfig | None = None):
-        self.config = config or AgentConfig.from_env()
+        self.config = config or AgentConfig.resolve()
 
         # 初始化工具
         self.tool_registry = get_registry()
@@ -55,11 +55,23 @@ class CodingAgent:
         from .tools.tdd_ops import register_tdd_tools
         from .tools.memory_ops import register_memory_tools
         from .tools.web_ops import register_web_tools
+        from .tools.ask_ops import register_ask_tools
+        from .tools.skill_ops import register_skill_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
         register_memory_tools()
         register_web_tools()
+        self.ask_tool = register_ask_tools(handler=self._ask_user)
+        # Skills：注册 skill 工具（渐进式披露的"展开"半步）
+        self.skill_tool = register_skill_tools()
+
+        # 配置驱动的命令 hook（settings.json 风格）
+        if getattr(self.config, "hooks", None):
+            from .core.hooks_config import register_config_hooks
+            n = register_config_hooks(self.config.hooks, self.tool_registry)
+            if n:
+                print(f"   Hooks: registered {n} command hook(s)")
 
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
@@ -83,27 +95,74 @@ class CodingAgent:
         
         # 设置模型调用函数
         self.agent_loop.set_model_call_fn(self._call_model)
+        # token 预算：让 agent loop 能查询累计 token
+        self.agent_loop.set_token_usage_fn(
+            lambda: self.model_client.total_prompt_tokens
+            + self.model_client.total_completion_tokens
+        )
         
         # 设置权限确认回调
         self.agent_loop.set_permission_handler(self._confirm_permission)
+
+        # Skills：把"可用 skills 清单"作为额外 system 块按需注入（渐进式披露）。
+        # 用函数延迟求值，使新增/改动 skill 后无需重启即可生效。
+        from .core.skills import discover_skills, render_available_skills
+        self.agent_loop.set_extra_system_provider(
+            lambda: render_available_skills(discover_skills())
+        )
         
         # 当前状态
         self.state: AgentState | None = None
-    
+
+        # 流式增量回调（可被前端覆盖）。默认 None → _call_model 用 print。
+        # TUI 把它们重定向到 live 缓冲，避免 print 打断 rich.Live 重绘。
+        self.on_text_delta: Any = None
+        self.on_reasoning_delta: Any = None
+
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """
         调用模型（支持流式输出）。
 
-        委托给统一的 ModelClient；流式文本通过回调直接打印到终端。
+        委托给统一的 ModelClient；流式文本通过回调输出。默认打印到终端；
+        前端（如 TUI）可通过 self.on_text_delta / on_reasoning_delta 重定向。
         支持 OpenAI 兼容 API（包括小米 mify）。
         """
-        on_delta = (lambda chunk: print(chunk, end="", flush=True)) if self.config.stream else None
+        if self.on_text_delta is not None:
+            on_delta = self.on_text_delta
+        elif self.config.stream:
+            on_delta = lambda chunk: print(chunk, end="", flush=True)
+        else:
+            on_delta = None
+        # 推理增量：前端覆盖优先；否则流式时用暗色前缀打印，和正文区分
+        if self.on_reasoning_delta is not None:
+            on_reasoning = self.on_reasoning_delta
+        elif self.config.stream:
+            on_reasoning = lambda chunk: print(f"\033[2m{chunk}\033[0m", end="", flush=True)
+        else:
+            on_reasoning = None
         return await self.model_client.complete(
             context,
             tools,
             on_text_delta=on_delta,
-            stream=self.config.stream,
+            on_reasoning_delta=on_reasoning,
+            stream=self.config.stream or self.on_text_delta is not None,
         )
+
+    async def _ask_user(self, question: str, options: list[str]) -> str:
+        """ask_user 工具的终端回调：展示问题/选项，读取用户回答。"""
+        print(f"\n{'─' * 50}")
+        print(f"❓ {question}")
+        for i, opt in enumerate(options, 1):
+            print(f"   {i}. {opt}")
+        print(f"{'─' * 50}")
+        try:
+            ans = input("   Your answer: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return "(no answer)"
+        # 允许用序号选择某个选项
+        if ans.isdigit() and options and 1 <= int(ans) <= len(options):
+            return options[int(ans) - 1]
+        return ans or "(no answer)"
 
     async def _confirm_permission(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """
@@ -156,6 +215,19 @@ class CodingAgent:
     
     async def start(self, session_id: str | None = None) -> None:
         """启动 Agent"""
+        # 连接已配置的 MCP servers（失败降级，不阻塞启动）
+        self._mcp_clients = []
+        if getattr(self.config, "mcp_servers", None):
+            from .tools.mcp_client import register_mcp_servers
+            try:
+                self._mcp_clients = await register_mcp_servers(
+                    self.config.mcp_servers, self.tool_registry
+                )
+                if self._mcp_clients:
+                    print(f"   MCP: connected {len(self._mcp_clients)} server(s)")
+            except Exception as e:
+                print(f"   MCP: failed to connect ({e})")
+
         # 加载或创建会话
         if session_id:
             self.state = self.session_store.load_state(session_id)
@@ -180,7 +252,7 @@ class CodingAgent:
         print(f"   Auto-approve: {'ON' if self.config.auto_approve else 'OFF'}")
         print(f"   Tools: {len(self.tool_registry.get_all_tools())}")
         print()
-        print("Commands: quit, new, sessions, help")
+        print("Commands: /help /tools /cost /compact /new /sessions /quit")
         print("=" * 50)
         
         # 交互循环
@@ -193,47 +265,114 @@ class CodingAgent:
             
             if not user_input:
                 continue
-            
-            if user_input.lower() == "quit":
-                print("Goodbye!")
-                break
-            
-            if user_input.lower() == "new":
-                self.state = AgentState(
-                    session_id=self.session_store.create_session()
+
+            # Slash 命令（/help /tools /cost /compact /new ... + 自定义命令）
+            from .core.commands import is_command, dispatch, CommandContext
+            # 兼容旧的裸词命令
+            if user_input.lower() in ("quit", "exit"):
+                user_input = "/quit"
+            elif user_input.lower() == "new":
+                user_input = "/new"
+            elif user_input.lower() == "sessions":
+                user_input = "/sessions"
+            elif user_input.lower() == "help":
+                user_input = "/help"
+
+            if is_command(user_input):
+                mc = self.model_client
+                ctx = CommandContext(
+                    tool_names=[t.name for t in self.tool_registry.get_all_tools()],
+                    total_prompt_tokens=mc.total_prompt_tokens,
+                    total_completion_tokens=mc.total_completion_tokens,
+                    total_reasoning_tokens=mc.total_reasoning_tokens,
+                    cache_hit_rate=mc.cache_hit_rate,
+                    session_id=self.state.session_id if self.state else None,
+                    turn_count=self.state.turn_count if self.state else 0,
                 )
+                result = dispatch(user_input, ctx)
+                handled = await self._handle_command_result(result)
+                if handled == "quit":
+                    break
+                if handled == "continue":
+                    continue
+                # result.kind == "prompt" -> 落到下面作为用户消息运行
+                user_input = result.payload
+
+            # 运行 Agent
+            print()
+
+            async for event in self.agent_loop.run(self.state, user_input):
+                await self._handle_event(event)
+
+            # 首轮结束后，若还没有标题，生成一个让会话列表可辨识。
+            await self._maybe_set_title()
+
+    async def _maybe_set_title(self) -> None:
+        """会话尚无标题时，用模型（失败回退启发式）生成一行标题并持久化。"""
+        if not self.state:
+            return
+        if (self.state.metadata or {}).get("title"):
+            return
+        from .core.session_title import generate_title
+        try:
+            title = await generate_title(self.state, self._call_model)
+        except Exception:
+            return
+        if title:
+            self.state.metadata["title"] = title
+            try:
+                self.session_store.set_title(self.state.session_id, title)
+            except Exception:
+                pass
+
+    async def _handle_command_result(self, result) -> str:
+        """处理 slash 命令结果。返回 'quit'/'continue'/'run'。"""
+        if result.kind == "print":
+            print(result.payload)
+            return "continue"
+        if result.kind == "action":
+            act = result.payload
+            if act == "quit":
+                print("Goodbye!")
+                return "quit"
+            if act == "new":
+                self.state = AgentState(session_id=self.session_store.create_session())
                 self.plan_tool.bind_state(self.state)
                 self.model_client.prompt_cache_key = self.state.session_id
                 print("✨ Started new session")
-                continue
-            
-            if user_input.lower() == "sessions":
+                return "continue"
+            if act == "sessions":
                 sessions = self.session_store.list_sessions()
                 print("\n📋 Recent sessions:")
                 for s in sessions[:5]:
-                    print(f"   {s['id'][:8]}... ({s['updated_at']})")
-                continue
-            
-            if user_input.lower() == "help":
-                print("""
-Commands:
-  quit      - Exit the agent
-  new       - Start a new session
-  sessions  - List recent sessions
-  help      - Show this help
+                    title = (s.get("metadata") or {}).get("title", "")
+                    label = f" — {title}" if title else ""
+                    print(f"   {s['id'][:8]}... ({s['updated_at']}){label}")
+                return "continue"
+            if act == "plan":
+                plan = (self.state.metadata.get("plan") if self.state else None)
+                if plan:
+                    from .tools.plan_ops import render_plan
+                    print(render_plan(plan))
+                else:
+                    print("No plan set yet.")
+                return "continue"
+            if act == "compact":
+                if self.state:
+                    await self.agent_loop.context_manager.compact(
+                        self.state, self.agent_loop._model_call_fn)
+                    print("📦 Compacted.")
+                return "continue"
+            if act == "plan_mode":
+                pol = self.agent_loop.permission_policy
+                pol.plan_mode = not pol.plan_mode
+                print("🧭 Plan mode " + ("ON — read-only; the agent can explore and "
+                      "plan but won't edit/run." if pol.plan_mode else "OFF — edits allowed again."))
+                return "continue"
+            return "continue"
+        # "prompt" -> 让调用方把 payload 作为用户消息运行
+        return "run"
 
-Permissions:
-  y/yes     - Allow this tool call
-  n/no      - Deny this tool call
-  a/all     - Allow all tool calls this session
-""")
-                continue
-            
-            # 运行 Agent
-            print()
-            
-            async for event in self.agent_loop.run(self.state, user_input):
-                await self._handle_event(event)
     
     async def _handle_event(self, event: AgentEventData) -> None:
         """处理 Agent 事件"""
@@ -289,23 +428,85 @@ Permissions:
             print(f"✨ Done in {turns} turns")
             mc = self.model_client
             if mc.total_prompt_tokens:
+                reasoning = (f", reasoning: {mc.total_reasoning_tokens}"
+                             if mc.total_reasoning_tokens else "")
                 print(f"   Tokens: {mc.total_prompt_tokens} in / "
-                      f"{mc.total_completion_tokens} out "
+                      f"{mc.total_completion_tokens} out{reasoning} "
                       f"(cache hits: {mc.cache_hit_rate*100:.0f}%)")
 
 
-async def main() -> None:
+def _parse_args(argv: list[str]) -> dict[str, Any]:
+    """解析 CLI 参数：--resume [id] / --list-sessions / --help。"""
+    import argparse
+    p = argparse.ArgumentParser(prog="coding-agent", add_help=True,
+                                description="Lightweight AI coding agent")
+    p.add_argument("--resume", nargs="?", const="__PICK__", default=None,
+                   metavar="SESSION_ID",
+                   help="Resume a session by id; with no id, pick from recent sessions")
+    p.add_argument("--list-sessions", action="store_true",
+                   help="List recent sessions and exit")
+    p.add_argument("--tui", action="store_true",
+                   help="Use the rich TUI front-end")
+    args = p.parse_args(argv)
+    return {"resume": args.resume, "list_sessions": args.list_sessions, "tui": args.tui}
+
+
+async def main(argv: list[str] | None = None) -> None:
     """主函数"""
-    config = AgentConfig.from_env()
-    
+    import sys as _sys
+    opts = _parse_args(argv if argv is not None else _sys.argv[1:])
+
+    config = AgentConfig.resolve()
+
+    # --list-sessions: 列出最近会话后退出（不需要 API key）
+    if opts["list_sessions"]:
+        from .memory import SessionStore
+        store = SessionStore(config.session_db_path)
+        sessions = store.list_sessions()
+        if not sessions:
+            print("No sessions yet.")
+        else:
+            print("Recent sessions:")
+            for s in sessions[:20]:
+                title = (s.get("metadata") or {}).get("title", "")
+                label = f"  {title}" if title else ""
+                print(f"  {s['id']}  ({s.get('updated_at', '?')}){label}")
+        return
+
     # 检查 API key
     if not config.api_key:
         print("Error: No API key configured")
         print("Set OPENAI_API_KEY or LLM_API_KEY environment variable")
         sys.exit(1)
-    
+
     agent = CodingAgent(config)
-    await agent.start()
+
+    # --resume: 恢复指定/选中的会话
+    resume_id = opts["resume"]
+    if resume_id == "__PICK__":
+        sessions = agent.session_store.list_sessions()
+        if not sessions:
+            print("No sessions to resume; starting fresh.")
+            resume_id = None
+        else:
+            print("Recent sessions:")
+            for i, s in enumerate(sessions[:10], 1):
+                print(f"  {i}. {s['id'][:8]}... ({s.get('updated_at','?')})")
+            try:
+                pick = input("Resume which? [number, or Enter for new]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pick = ""
+            resume_id = (sessions[int(pick) - 1]["id"]
+                         if pick.isdigit() and 1 <= int(pick) <= len(sessions[:10])
+                         else None)
+
+    # --tui: 用 rich TUI 前端
+    if opts.get("tui"):
+        from .ui.app import TuiApp
+        await TuiApp(agent).run(session_id=resume_id)
+        return
+
+    await agent.start(session_id=resume_id)
 
 
 def cli() -> None:

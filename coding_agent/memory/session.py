@@ -206,6 +206,23 @@ class SessionStore:
             
             return sessions
     
+    def set_title(self, session_id: str, title: str) -> None:
+        """把标题写入会话的 metadata（复用现有 JSON 列，无需迁移 schema）。"""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return
+            meta = json.loads(row[0]) if row[0] else {}
+            meta["title"] = title
+            conn.execute(
+                "UPDATE sessions SET metadata = ? WHERE id = ?",
+                (json.dumps(meta), session_id),
+            )
+            conn.commit()
+
     def delete_session(self, session_id: str) -> None:
         """删除会话"""
         with sqlite3.connect(str(self.db_path)) as conn:

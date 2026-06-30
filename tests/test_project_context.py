@@ -99,3 +99,50 @@ def test_context_manager_can_disable_project_context(tmp_path, monkeypatch):
     messages = cm.assemble_context(state, "SYSTEM")
     joined = " ".join(str(m) for m in messages)
     assert "SHOULD_NOT_APPEAR" not in joined
+
+
+# ── nested AGENTS.md from touched dirs ──────────────────────────────────────
+from coding_agent.context import project_context as pc
+
+
+def test_nested_agents_md_surfaced_after_read(tmp_path, monkeypatch):
+    pc._TOUCHED_DIRS.clear()
+    _init_git(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("ROOT_RULE", encoding="utf-8")
+    sub = tmp_path / "service"
+    sub.mkdir()
+    (sub / "AGENTS.md").write_text("SERVICE_RULE", encoding="utf-8")
+    (sub / "app.py").write_text("x=1\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
+
+    # 起始只在 root：不含 service 规则
+    ctx0 = pc.load_project_context()
+    assert "ROOT_RULE" in ctx0
+    assert "SERVICE_RULE" not in ctx0
+
+    # agent 读了 service/app.py -> 登记该目录
+    pc.note_touched_path(str(sub / "app.py"))
+    ctx1 = pc.load_project_context()
+    assert "SERVICE_RULE" in ctx1
+    pc._TOUCHED_DIRS.clear()
+
+
+def test_context_manager_refreshes_on_new_touched_dir(tmp_path, monkeypatch):
+    pc._TOUCHED_DIRS.clear()
+    _init_git(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("ROOT", encoding="utf-8")
+    sub = tmp_path / "pkg"; sub.mkdir()
+    (sub / "CLAUDE.md").write_text("PKG_RULE", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
+
+    cm = ContextManager(max_tokens=10000)
+    state = AgentState(); state.add_user_message("hi")
+    msgs0 = cm.assemble_context(state, "SYS")
+    assert not any("PKG_RULE" in str(m) for m in msgs0)
+
+    pc.note_touched_path(str(sub / "x.py"))
+    msgs1 = cm.assemble_context(state, "SYS")
+    assert any("PKG_RULE" in str(m) for m in msgs1)  # 缓存已失效并纳入
+    pc._TOUCHED_DIRS.clear()
