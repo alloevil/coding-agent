@@ -53,7 +53,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Capability | coding-agent | Claude Code | opencode |
 |---|---|---|---|
 | Slash commands | ✅ (built-in + custom) | ✅ (`/init` etc + custom) | ✅ (custom templated) |
-| Hooks (lifecycle) | 🟡 (enum exists; only PRE/POST_TOOL fire; no config) | ✅ (settings.json hooks) | ✅ (plugins) |
+| Hooks (lifecycle) | ✅ (all events fire; config command hooks) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
 | TUI | ❌ (CLI + Go protocol) | ✅ | ✅ (rich TUI) |
 | Session resume (`--resume`) | ✅ (`--resume`/`--list-sessions`) | ✅ | ✅ |
