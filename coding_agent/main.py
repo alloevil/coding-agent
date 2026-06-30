@@ -55,11 +55,13 @@ class CodingAgent:
         from .tools.tdd_ops import register_tdd_tools
         from .tools.memory_ops import register_memory_tools
         from .tools.web_ops import register_web_tools
+        from .tools.ask_ops import register_ask_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
         register_memory_tools()
         register_web_tools()
+        self.ask_tool = register_ask_tools(handler=self._ask_user)
 
         # 初始化存储
         self.session_store = SessionStore(self.config.session_db_path)
@@ -115,6 +117,22 @@ class CodingAgent:
             on_reasoning_delta=on_reasoning,
             stream=self.config.stream,
         )
+
+    async def _ask_user(self, question: str, options: list[str]) -> str:
+        """ask_user 工具的终端回调：展示问题/选项，读取用户回答。"""
+        print(f"\n{'─' * 50}")
+        print(f"❓ {question}")
+        for i, opt in enumerate(options, 1):
+            print(f"   {i}. {opt}")
+        print(f"{'─' * 50}")
+        try:
+            ans = input("   Your answer: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return "(no answer)"
+        # 允许用序号选择某个选项
+        if ans.isdigit() and options and 1 <= int(ans) <= len(options):
+            return options[int(ans) - 1]
+        return ans or "(no answer)"
 
     async def _confirm_permission(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """

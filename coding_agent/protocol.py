@@ -53,11 +53,13 @@ class AgentProtocol:
         from .tools.tdd_ops import register_tdd_tools
         from .tools.memory_ops import register_memory_tools
         from .tools.web_ops import register_web_tools
+        from .tools.ask_ops import register_ask_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
         register_memory_tools()
         register_web_tools()
+        self.ask_tool = register_ask_tools(handler=self._ask_user)
         
         self.tool_registry = get_registry()
         self.session_store = SessionStore(config.session_db_path)
@@ -92,7 +94,18 @@ class AgentProtocol:
         # 权限确认队列（等待 TUI 响应）
         self._permission_event = asyncio.Event()
         self._permission_result: bool = False
-    
+
+        # ask_user 问答队列（等待 TUI 响应）
+        self._question_event = asyncio.Event()
+        self._question_answer: str = ""
+
+    async def _ask_user(self, question: str, options: list[str]) -> str:
+        """ask_user 工具：发问题事件给 TUI，等待 question_response。"""
+        self._send_event("question", {"question": question, "options": options})
+        self._question_event.clear()
+        await self._question_event.wait()
+        return self._question_answer
+
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """调用模型（流式）。委托给统一 ModelClient；文本增量转为 stream_text 事件。"""
         return await self.model_client.complete(
@@ -156,7 +169,11 @@ class AgentProtocol:
         elif req_type == "permission_response":
             self._permission_result = request.get("approved", False)
             self._permission_event.set()
-        
+
+        elif req_type == "question_response":
+            self._question_answer = request.get("answer", "")
+            self._question_event.set()
+
         elif req_type == "new_session":
             self.state = AgentState(
                 session_id=self.session_store.create_session()

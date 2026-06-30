@@ -63,6 +63,7 @@ class AgentConfig:
 - Manage git repositories (git_status, git_diff, git_commit)
 - Run the project's tests (tdd_run_tests)
 - Track multi-step work (update_plan)
+- Ask the user when genuinely blocked on a decision (ask_user)
 
 Always think step by step before taking action. When editing files, make minimal, focused changes.
 
