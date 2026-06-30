@@ -29,6 +29,38 @@ DEFAULT_IGNORE_DIRS = frozenset({
 })
 
 
+# 读取追踪：记录每个被 file_read 读过的文件的 (mtime, size)，
+# 供 file_edit/apply_patch 做"读后被改"陈旧检测（advisory，不阻断）。
+_READ_TRACKER: dict[str, tuple[float, int]] = {}
+
+
+def _record_read(path: str) -> None:
+    try:
+        st = Path(path).stat()
+        _READ_TRACKER[str(Path(path).resolve())] = (st.st_mtime, st.st_size)
+    except OSError:
+        pass
+
+
+def _staleness_warning(path: str) -> str:
+    """若文件自上次 file_read 后在磁盘上变化过，返回一段提醒（否则空串）。"""
+    try:
+        key = str(Path(path).resolve())
+    except OSError:
+        return ""
+    rec = _READ_TRACKER.get(key)
+    if rec is None:
+        return ""  # 没读过就不提醒（首次写/盲改不在此范围）
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return ""
+    if (st.st_mtime, st.st_size) != rec:
+        return ("\n⚠️ Note: this file changed on disk since you last read it; "
+                "your edit was applied to the current contents. Re-read if unsure.")
+    return ""
+
+
 def _syntax_warning(path: str, content: str) -> str:
     """
     对刚写入的文件做尽力而为的语法校验，返回一段警告后缀（无问题则空串）。
@@ -159,6 +191,7 @@ class FileReadTool(Tool):
                     f"Read next page with offset={end + 1}"
                     + (f", limit={page}." if limit else ".")
                 )
+            _record_read(path)
             return body
         except Exception as e:
             return f"Error reading file: {str(e)}"
@@ -301,9 +334,14 @@ class FileEditTool(Tool):
                     return f"Error: {msg}{hint}"
                 return f"Error: {msg}"
 
+            # 写前检测：文件自上次 file_read 后是否被改过（advisory）
+            stale = _staleness_warning(path)
+
             file_path.write_text(new_content, encoding="utf-8")
+            _record_read(path)  # 编辑后刷新追踪基线
             suffix = " (replace_all)" if replace_all else ""
-            return f"Successfully edited '{path}'{suffix}" + _syntax_warning(path, new_content)
+            return (f"Successfully edited '{path}'{suffix}"
+                    + _syntax_warning(path, new_content) + stale)
         except Exception as e:
             return f"Error editing file: {str(e)}"
 
