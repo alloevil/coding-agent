@@ -1,6 +1,6 @@
 # Feature Comparison: coding-agent vs Claude Code vs opencode
 
-Status snapshot (361 tests passing). Compares our `coding-agent` against:
+Status snapshot (437 tests passing). Compares our `coding-agent` against:
 - **Claude Code** — Anthropic's CLI, by its *publicly documented* features (the
   leaked source is deliberately not consulted).
 - **opencode** — sst/opencode, open source (read directly from the repo).
@@ -13,7 +13,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 |---|---|---|---|
 | Read file (paginated) | ✅ `file_read` (2k pages, binary/size guard) | ✅ Read | ✅ read |
 | Write file | ✅ `file_write` (+syntax warn) | ✅ Write | ✅ write |
-| Edit (fuzzy multi-strategy) | ✅ `file_edit` (5 strategies) | ✅ Edit | ✅ edit (9 strategies) |
+| Edit (fuzzy multi-strategy) | ✅ `file_edit` (7 strategies) | ✅ Edit | ✅ edit (9 strategies) |
 | Multi-file atomic patch | ✅ `apply_patch` | 🟡 (MultiEdit) | ✅ apply-patch |
 | Glob / file search | ✅ `file_search` (gitignore-aware) | ✅ Glob | ✅ glob |
 | Grep | ✅ `grep` (gitignore-aware) | ✅ Grep | ✅ grep |
@@ -52,6 +52,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 
 | Capability | coding-agent | Claude Code | opencode |
 |---|---|---|---|
+| Plan mode (read-only) | ✅ (`/plan-mode`; denies write/exec) | ✅ (Plan mode) | ✅ (plan agent) |
 | Slash commands | ✅ (built-in + custom) | ✅ (`/init` etc + custom) | ✅ (custom templated) |
 | Hooks (lifecycle) | ✅ (all events fire; config command hooks) | ✅ (settings.json hooks) | ✅ (plugins) |
 | Config file load | ✅ (global + project merge) | ✅ (settings.json) | ✅ (opencode.json) |
@@ -63,14 +64,18 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 ## Prioritized backlog
 
 **Done since first matrix:** slash commands ✅, config-file load ✅, token budget ✅,
-ask_user ✅, fuzzy edit ✅, persistent shell cwd ✅, post-edit syntax check ✅.
+ask_user ✅, fuzzy edit (7 strategies) ✅, persistent shell cwd ✅, post-edit syntax
+check ✅, plan mode ✅, ripgrep fast-path ✅, grep context lines ✅, nested AGENTS.md ✅,
+`git_branch` ✅, production system prompt ✅.
 
 **Remaining (offline-verifiable):**
-- (none high-value left — fuzzy edit has 7 strategies; LSP is lazy-start by
-  design; staleness detection + patch rollback added.)
+- **Skills** (❌ for us; ✅ Claude Code, ✅ opencode) — a `skill` tool that loads a
+  named instruction bundle from disk (`.coding-agent/skills/<name>/SKILL.md`) and
+  injects it on demand. Highest-value remaining tool gap; fully local/testable.
+- Session summary/title generation (nice-to-have; needs a model call but verifiable
+  with a stubbed model).
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
 - Anthropic-native backend (mimorouter group unreachable with this token).
-- TUI (opencode/Claude Code have rich TUIs; we ship CLI + a Go stdin/stdout
-  protocol). Large effort, separate track.
+- Full interactive TUI parity (rich TUI ships via `--tui`; large separate track).
