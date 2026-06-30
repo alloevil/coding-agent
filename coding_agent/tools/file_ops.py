@@ -638,6 +638,10 @@ class ListFilesTool(Tool):
                 "recursive": {
                     "type": "boolean",
                     "description": "Whether to list files recursively (default: false)"
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "In recursive mode, include noise dirs (.git/node_modules/...). Default false."
                 }
             },
             "required": []
@@ -650,14 +654,21 @@ class ListFilesTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         path = kwargs.get("path", ".")
         recursive = kwargs.get("recursive", False)
-        
+        include_ignored = kwargs.get("include_ignored", False)
+
         try:
             path_obj = Path(path)
             if not path_obj.exists():
                 return f"Error: Directory '{path}' does not exist"
-            
+
             if recursive:
                 files = sorted(path_obj.rglob("*"))
+                # 递归时跳过噪音目录（.git/node_modules/venv/...）
+                if not include_ignored:
+                    files = [f for f in files
+                             if not _is_ignored(f.relative_to(path_obj)
+                                                if f.is_relative_to(path_obj) else f,
+                                                DEFAULT_IGNORE_DIRS)]
             else:
                 files = sorted(path_obj.iterdir())
             

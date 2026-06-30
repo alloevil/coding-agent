@@ -49,3 +49,26 @@ async def test_file_search_skips_noise_dirs(tmp_path):
     assert "app.py" in out
     assert "node_modules" not in out
     assert "__pycache__" not in out
+
+
+# ── list_files recursive gitignore-awareness ───────────────────────────────
+from coding_agent.tools.file_ops import ListFilesTool
+
+
+@pytest.mark.asyncio
+async def test_list_files_recursive_skips_noise(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.py").write_text("y")
+    out = await ListFilesTool().execute(path=str(tmp_path), recursive=True)
+    assert "app.py" in out
+    assert "dep.py" not in out and "node_modules" not in out
+
+
+@pytest.mark.asyncio
+async def test_list_files_recursive_include_ignored(tmp_path):
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.py").write_text("y")
+    out = await ListFilesTool().execute(path=str(tmp_path), recursive=True, include_ignored=True)
+    assert "dep.py" in out
