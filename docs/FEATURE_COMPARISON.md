@@ -25,7 +25,7 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 | Ask-user / question | ✅ `ask_user` | ✅ (AskUserQuestion) | ✅ question |
 | Memory | ✅ `memory_*` (SQLite/project) | ✅ (CLAUDE.md + memory) | 🟡 |
 | TDD / test runner | ✅ `tdd_run_tests` | 🟡 (via Bash) | 🟡 (via bash) |
-| LSP (real language servers) | 🟡 `lsp_*` (not started by default) | ✅ (diagnostics) | ✅ full LSP client |
+| LSP (real language servers) | ✅ `lsp_*` (lazy-start on first use) | ✅ (diagnostics) | ✅ full LSP client |
 | Skills | ❌ | ✅ Skills | ✅ skill tool |
 | Browser control | ✅ `browser_*` (playwright) | 🟡 | ❌ |
 
@@ -66,14 +66,11 @@ Legend: ✅ have it · 🟡 partial · ❌ missing
 ask_user ✅, fuzzy edit ✅, persistent shell cwd ✅, post-edit syntax check ✅.
 
 **Remaining (offline-verifiable):**
-1. **Hooks config-ization** — wire PRE/POST_MODEL_CALL + ON_COMPACT, load hook
-   config from settings so users can register automation. MED.
-2. **Session resume UX** — `coding-agent --resume <id>` / list+pick. MED.
-3. **LSP auto-start** — tools exist but no language server is launched by default. LOW.
-4. **More edit strategies** — opencode has 9; we have 5 (escape-normalized,
-   trimmed-boundary, context-aware, multi-occurrence). LOW (diminishing returns).
-5. **`/init` command** — generate an AGENTS.md by scanning the repo. MED.
+- (none high-value left — fuzzy edit has 7 strategies; LSP is lazy-start by
+  design; staleness detection + patch rollback added.)
 
 **Blocked on endpoint (can't verify here):**
 - Multimodal image input (needs a vision endpoint).
 - Anthropic-native backend (mimorouter group unreachable with this token).
+- TUI (opencode/Claude Code have rich TUIs; we ship CLI + a Go stdin/stdout
+  protocol). Large effort, separate track.
