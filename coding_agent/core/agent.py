@@ -421,6 +421,14 @@ class AgentLoop:
                     yield ev
                 i += 1
 
+            # 工具执行后检查是否需要紧急压缩（防止 context 膨胀）
+            if self.context_manager.needs_compaction(state):
+                yield AgentEventData(
+                    event=AgentEvent.COMPACTING,
+                    data={"message": "Post-tool compaction..."}
+                )
+                await self.context_manager.compact(state, self._model_call_fn)
+
         # 保存会话
         if state.session_id:
             self.session_store.save_state(state.session_id, state)
@@ -437,6 +445,20 @@ class AgentLoop:
             tool_call.name, tool_call.arguments, tool.permission
         )
         return decision == Decision.ALLOW
+
+    # 工具输出截断阈值：超过此长度的工具结果会被截断，防止 context 膨胀
+    MAX_TOOL_OUTPUT_CHARS = 16384  # ~4K tokens
+
+    def _truncate_tool_output(self, result: str, tool_name: str) -> str:
+        """截断过长的工具输出，保留头尾。"""
+        if len(result) <= self.MAX_TOOL_OUTPUT_CHARS:
+            return result
+        half = self.MAX_TOOL_OUTPUT_CHARS // 2
+        return (
+            result[:half]
+            + f"\n\n... [truncated {len(result) - self.MAX_TOOL_OUTPUT_CHARS} chars] ...\n\n"
+            + result[-half:]
+        )
 
     async def _dispatch_one(
         self, tool_call: ToolCall, state: AgentState
@@ -515,10 +537,11 @@ class AgentLoop:
                     else:
                         yield item
 
-        state.add_tool_result(tool_call.id, result, is_error)
+        truncated = self._truncate_tool_output(result, tool_call.name)
+        state.add_tool_result(tool_call.id, truncated, is_error)
         yield AgentEventData(
             event=AgentEvent.TOOL_RESULT,
-            data={"id": tool_call.id, "result": result, "is_error": is_error},
+            data={"id": tool_call.id, "result": truncated, "is_error": is_error},
         )
 
     async def _dispatch_parallel(
@@ -542,24 +565,28 @@ class AgentLoop:
                 result, is_error = f"Error executing tool '{tc.name}': {res}", True
             else:
                 result, is_error = res
-            state.add_tool_result(tc.id, result, is_error)
+            truncated = self._truncate_tool_output(result, tc.name)
+            state.add_tool_result(tc.id, truncated, is_error)
             yield AgentEventData(
                 event=AgentEvent.TOOL_RESULT,
-                data={"id": tc.id, "result": result, "is_error": is_error},
+                data={"id": tc.id, "result": truncated, "is_error": is_error},
             )
     
+    # 模型调用重试配置
+    _MODEL_MAX_RETRIES = 3
+    _MODEL_BASE_DELAY = 1.0
+    _MODEL_BACKOFF = 2.0
+    _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+
     async def _call_model(self, context: list[dict[str, Any]]) -> dict[str, Any]:
-        """调用模型"""
+        """调用模型，带指数退避重试（区分可重试/不可重试错误）。"""
         if not self._model_call_fn:
             raise RuntimeError("Model call function not set")
 
-        # 获取工具定义
         tools = self.tool_registry.get_openai_functions()
-        # 按 agent profile 的工具过滤器裁剪模型可见的工具集
         if self._tool_filter is not None:
             tools = [t for t in tools if self._tool_filter(_tool_fn_name(t))]
 
-        # PRE_MODEL_CALL hook
         from ..tools.base import HookEvent, HookContext
         await self.tool_registry.run_hooks(
             HookEvent.PRE_MODEL_CALL,
@@ -567,16 +594,36 @@ class AgentLoop:
                         metadata={"message_count": len(context)}),
         )
 
-        # 调用模型
-        response = await self._model_call_fn(context, tools)
+        import httpx
+        last_exc: Exception | None = None
+        for attempt in range(self._MODEL_MAX_RETRIES + 1):
+            try:
+                response = await self._model_call_fn(context, tools)
+                await self.tool_registry.run_hooks(
+                    HookEvent.POST_MODEL_CALL,
+                    HookContext(event=HookEvent.POST_MODEL_CALL,
+                                metadata={"has_tool_calls": bool(response.get("tool_calls"))}),
+                )
+                return response
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_retryable = False
+                if isinstance(e, httpx.HTTPStatusError):
+                    is_retryable = e.response.status_code in self._RETRYABLE_STATUS
+                elif isinstance(e, (httpx.TransportError, httpx.TimeoutException)):
+                    is_retryable = True
+                elif any(kw in error_msg for kw in ("timeout", "connection", "rate limit", "429", "503")):
+                    is_retryable = True
 
-        # POST_MODEL_CALL hook
-        await self.tool_registry.run_hooks(
-            HookEvent.POST_MODEL_CALL,
-            HookContext(event=HookEvent.POST_MODEL_CALL,
-                        metadata={"has_tool_calls": bool(response.get("tool_calls"))}),
-        )
-        return response
+                if not is_retryable or attempt >= self._MODEL_MAX_RETRIES:
+                    raise
+
+                last_exc = e
+                delay = self._MODEL_BASE_DELAY * (self._MODEL_BACKOFF ** attempt)
+                await asyncio.sleep(delay)
+
+        if last_exc:
+            raise last_exc
     
     def _needs_permission(self, permission: ToolPermission) -> bool:
         """检查是否需要权限确认"""

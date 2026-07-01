@@ -191,21 +191,33 @@ class ContextManager:
 
     def _try_snip(self, state: AgentState) -> bool:
         """
-        Snip - 裁剪：截断过长的工具结果（保留 head + tail，比单纯截断更有用）。
+        Snip - 裁剪：截断过长的工具结果。
+        
+        策略：
+        - 最近 6 条消息的工具结果：宽松截断（保留较多内容）
+        - 更早的消息：激进截断（只保留头部摘要）
         """
-        max_len = 5000
-        head, tail = 3500, 1200
+        recent_threshold = 6
+        recent_max = 8000   # 最近消息：保留 8K chars
+        old_max = 2000      # 旧消息：只保留 2K chars
+        head_ratio = 0.7    # 头部占比
 
-        for msg in state.messages:
-            if msg.role == MessageRole.TOOL and msg.tool_result:
-                content = msg.tool_result.content
-                if len(content) > max_len:
-                    omitted = len(content) - head - tail
-                    msg.tool_result.content = (
-                        content[:head]
-                        + f"\n... ({omitted} chars truncated) ...\n"
-                        + content[-tail:]
-                    )
+        for i, msg in enumerate(state.messages):
+            if msg.role != MessageRole.TOOL or not msg.tool_result:
+                continue
+            content = msg.tool_result.content
+            is_recent = (len(state.messages) - i) <= recent_threshold
+            max_len = recent_max if is_recent else old_max
+
+            if len(content) > max_len:
+                head = int(max_len * head_ratio)
+                tail = max_len - head
+                omitted = len(content) - head - tail
+                msg.tool_result.content = (
+                    content[:head]
+                    + f"\n... ({omitted} chars truncated) ...\n"
+                    + content[-tail:]
+                )
 
         return state.get_token_estimate() <= self.max_tokens * 0.8
 
