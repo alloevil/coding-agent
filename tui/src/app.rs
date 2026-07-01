@@ -298,7 +298,12 @@ async fn handle_wizard_key(
                 if done {
                     let answers = w.answers();
                     backend.send(&Request::SaveConfig { answers }).await?;
-                    *wizard = None; // leave the wizard; config_saved event confirms
+                    *wizard = None;
+                    // Clear needs_setup NOW (optimistic) so the main loop's
+                    // "needs_setup && wizard.is_none()" guard doesn't immediately
+                    // reopen the wizard before the config_saved event arrives.
+                    // (This was the root cause of needing to run twice.)
+                    state.needs_setup = false;
                 }
             }
             (KeyCode::Char(c), _) => {
