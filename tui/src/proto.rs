@@ -48,6 +48,21 @@ pub enum Request {
     ListSessions,
     /// Toggle auto-approve.
     SetAutoApprove { value: bool },
+    /// Guided setup: persist config to the global config.json.
+    SaveConfig { answers: SaveAnswers },
+}
+
+/// Answers collected by the setup wizard, sent via SaveConfig.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SaveAnswers {
+    pub provider: String,
+    pub api_key: String,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    pub auto_approve: bool,
 }
 
 impl Request {
@@ -136,5 +151,31 @@ mod tests {
         let line = Request::PermissionResponse { approved: true }.to_line();
         assert!(line.contains("\"type\":\"permission_response\""));
         assert!(line.contains("\"approved\":true"));
+    }
+
+    #[test]
+    fn save_config_serializes_answers() {
+        let r = Request::SaveConfig {
+            answers: SaveAnswers {
+                provider: "anthropic".into(),
+                api_key: "tok".into(),
+                model: "claude-opus-4-8".into(),
+                base_url: None,
+                protocol: None,
+                auto_approve: true,
+            },
+        };
+        let line = r.to_line();
+        assert!(line.contains("\"type\":\"save_config\""));
+        assert!(line.contains("\"provider\":\"anthropic\""));
+        assert!(line.contains("\"api_key\":\"tok\""));
+        assert!(line.contains("\"auto_approve\":true"));
+        assert!(!line.contains("base_url")); // None omitted
+    }
+
+    #[test]
+    fn ready_needs_setup_parsed() {
+        let ev = Event::from_line("{\"type\":\"ready\",\"model\":\"m\",\"needs_setup\":true}").unwrap();
+        assert_eq!(ev.rest.get("needs_setup").and_then(|v| v.as_bool()), Some(true));
     }
 }
