@@ -418,6 +418,26 @@ class CodingAgent:
                                               mc.total_completion_tokens)
                 print("📊 " + self.status_tracker.render())
                 return "continue"
+            if act == "setup":
+                from .core.setup_wizard import run_cli_wizard
+                try:
+                    run_cli_wizard()
+                except (EOFError, KeyboardInterrupt):
+                    print("Setup cancelled.")
+                    return "continue"
+                # 重新解析并热更模型客户端
+                new_cfg = AgentConfig.resolve()
+                self.config.api_key = new_cfg.api_key
+                self.config.model = new_cfg.model
+                self.config.api_base_url = new_cfg.api_base_url
+                self.config.protocol = getattr(new_cfg, "protocol", "openai")
+                self.model_client.api_key = new_cfg.api_key
+                self.model_client.model = new_cfg.model
+                self.model_client.base_url = new_cfg.api_base_url.rstrip("/")
+                self.model_client.protocol = getattr(new_cfg, "protocol", "openai")
+                self.model_client.extra_headers = getattr(new_cfg, "extra_headers", {}) or {}
+                print(f"🧩 Reconfigured. Model: {new_cfg.model}")
+                return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
@@ -570,8 +590,11 @@ def _parse_args(argv: list[str]) -> dict[str, Any]:
                    help="List recent sessions and exit")
     p.add_argument("--tui", action="store_true",
                    help="Use the rich TUI front-end")
+    p.add_argument("--setup", action="store_true",
+                   help="Run the guided setup wizard (reconfigure provider/key/model)")
     args = p.parse_args(argv)
-    return {"resume": args.resume, "list_sessions": args.list_sessions, "tui": args.tui}
+    return {"resume": args.resume, "list_sessions": args.list_sessions,
+            "tui": args.tui, "setup": args.setup}
 
 
 async def main(argv: list[str] | None = None) -> None:
@@ -580,6 +603,16 @@ async def main(argv: list[str] | None = None) -> None:
     opts = _parse_args(argv if argv is not None else _sys.argv[1:])
 
     config = AgentConfig.resolve()
+
+    # --setup: 强制重新运行引导向导（即使已配置），随后重新解析继续。
+    if opts.get("setup"):
+        from .core.setup_wizard import run_cli_wizard
+        try:
+            run_cli_wizard()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            sys.exit(1)
+        config = AgentConfig.resolve()
 
     # --list-sessions: 列出最近会话后退出（不需要 API key）
     if opts["list_sessions"]:
