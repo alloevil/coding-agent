@@ -23,7 +23,7 @@ Agent 启动后自动从 `MODEL_API_KEY` 环境变量读取 API key，输出 `re
 | `new_session` | 新建会话 | — |
 | `set_auto_approve` | 设置自动批准 | `value`: bool |
 | `list_sessions` | 列出会话 | — |
-| `init` | 初始化配置(首行) | `api_key`, `model`, `api_base_url`, `auto_approve` |
+| `init` | 初始化配置(首行) | `api_key`, `model`, `api_base_url`, `auto_approve`, `protocol`(可选: openai/anthropic), `extra_headers`(可选) |
 | `interrupt` | 中断当前执行 | — |
 
 ### Agent → TUI（事件）

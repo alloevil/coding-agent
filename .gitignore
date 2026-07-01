@@ -76,3 +76,6 @@ ENV/
 benchmarks/benchmark_report.json
 benchmarks/*.json
 benchmarks/*.log
+
+# Rust TUI build artifacts
+tui/target/
