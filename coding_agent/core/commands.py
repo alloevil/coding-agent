@@ -210,6 +210,11 @@ def _cmd_setup(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", "setup")
 
 
+def _cmd_config(args: str, ctx: CommandContext) -> CommandResult:
+    """查看 / 改单项配置：/config（查看）、/config set <key> <value>（改单项）。"""
+    return CommandResult("action", f"config:{args.strip()}")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -222,6 +227,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "model": _cmd_model,
     "status": _cmd_status,
     "setup": _cmd_setup,
+    "config": _cmd_config,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,

@@ -117,6 +117,83 @@ def write_config(answers: dict[str, Any], home: str | None = None) -> Path:
     return path
 
 
+# 可通过 `config set <key> <value>` 修改的字段 → 解析函数（把字符串转成正确类型）。
+_EDITABLE_KEYS: dict[str, Any] = {
+    "api_key": str,
+    "model": str,
+    "api_base_url": str,
+    "protocol": str,
+    "auto_approve": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
+    "max_tokens": int,
+    "temperature": lambda s: None if str(s).strip().lower() in ("none", "null", "") else float(s),
+}
+
+
+def read_config(home: str | None = None) -> dict[str, Any]:
+    """读取全局 config.json（不存在返回空 dict）。"""
+    path = global_config_path(home)
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def set_config_value(key: str, value: str, home: str | None = None) -> Path:
+    """
+    改一个配置项（合并写入，不动其它键）。改 single 项不必重跑整个向导。
+
+    - key 必须在 _EDITABLE_KEYS 里，否则 ValueError（防止写脏键）。
+    - protocol 切到 anthropic 且原本没有 Bearer 头时，自动补 Authorization 头，
+      与向导的 anthropic 预设保持一致（少一个「改完还是连不上」的坑）。
+    """
+    if key not in _EDITABLE_KEYS:
+        raise ValueError(
+            f"unknown config key: {key!r}. "
+            f"editable: {', '.join(sorted(_EDITABLE_KEYS))}"
+        )
+    parse = _EDITABLE_KEYS[key]
+    try:
+        parsed = parse(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"invalid value for {key}: {value!r} ({e})") from e
+
+    if key == "api_key" and not str(parsed).strip():
+        raise ValueError("api_key must not be empty")
+
+    path = global_config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = read_config(home)
+    data[key] = parsed
+
+    # anthropic 协议：若没有鉴权头，用当前 key 补一个 Bearer（与预设一致）。
+    if key in ("protocol", "api_key") and data.get("protocol") == "anthropic":
+        k = data.get("api_key", "")
+        if k and not data.get("extra_headers"):
+            data["extra_headers"] = {"Authorization": f"Bearer {k}"}
+
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def redact(data: dict[str, Any]) -> dict[str, Any]:
+    """返回一份把敏感值打码的副本，用于展示（api_key / Bearer 头只留头尾）。"""
+    def _mask(s: str) -> str:
+        s = str(s)
+        return s if len(s) <= 8 else f"{s[:4]}…{s[-4:]}"
+    out = dict(data)
+    if out.get("api_key"):
+        out["api_key"] = _mask(out["api_key"])
+    if isinstance(out.get("extra_headers"), dict):
+        hdrs = dict(out["extra_headers"])
+        for hk, hv in hdrs.items():
+            if "authorization" in hk.lower() or "api-key" in hk.lower():
+                hdrs[hk] = _mask(hv)
+        out["extra_headers"] = hdrs
+    return out
+
+
 # ── CLI 文本向导（Python 后备） ──────────────────────────────────────
 
 def run_cli_wizard(input_fn: Callable[[str], str] = input,

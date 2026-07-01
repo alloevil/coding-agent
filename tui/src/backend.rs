@@ -41,12 +41,7 @@ impl Backend {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(path) = std::env::var("CODING_AGENT_DEBUG") {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                        let _ = writeln!(f, "[backend stderr] {line}");
-                    }
-                }
+                crate::app::dbg_log(&format!("[backend stderr] {line}"));
             }
         });
 
