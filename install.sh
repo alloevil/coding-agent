@@ -13,7 +13,8 @@
 # 选项：
 #   --with-tokenizer  额外装 tiktoken（更准的 token 计数）
 #   --with-browser    额外装 playwright（browser_* 工具）
-#   --all             装上面所有可选依赖
+#   --with-tui        构建 Rust 全屏 TUI（需要 cargo 工具链）
+#   --all             装上面所有可选依赖 + 构建 TUI
 #   --no-dev          不装 dev 依赖（仅运行所需）
 #   --dir <path>      clone 的目标目录（默认 ./coding-agent）
 #
@@ -26,6 +27,7 @@ CLONE_DIR="coding-agent"
 VENV=".venv"
 WITH_TOKENIZER=0
 WITH_BROWSER=0
+WITH_TUI=0
 DEV=1
 
 # 解析参数（先解析 --dir，clone 时要用）
@@ -35,11 +37,12 @@ while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --with-tokenizer) WITH_TOKENIZER=1 ;;
     --with-browser)   WITH_BROWSER=1 ;;
-    --all)            WITH_TOKENIZER=1; WITH_BROWSER=1 ;;
+    --with-tui)       WITH_TUI=1 ;;
+    --all)            WITH_TOKENIZER=1; WITH_BROWSER=1; WITH_TUI=1 ;;
     --no-dev)         DEV=0 ;;
     --dir)            i=$((i+1)); CLONE_DIR="${args[$i]}" ;;
     -h|--help)
-      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "Unknown option: ${args[$i]} (try --help)"; exit 1 ;;
   esac
@@ -112,6 +115,22 @@ if [ "$WITH_BROWSER" = "1" ]; then
     echo "⚠️  playwright browser install failed; browser_* tools may not work."
 fi
 
+# 5. 可选：构建 Rust 全屏 TUI（需要 cargo 工具链）
+TUI_BIN=""
+if [ "$WITH_TUI" = "1" ]; then
+  if command -v cargo >/dev/null 2>&1; then
+    echo "🦀 Building the Rust TUI (cargo build --release) ..."
+    if (cd tui && cargo build --release 2>/dev/null); then
+      TUI_BIN="tui/target/release/coding-agent-tui"
+      echo "   Built $TUI_BIN"
+    else
+      echo "⚠️  Rust TUI build failed; the CLI and rich --tui still work."
+    fi
+  else
+    echo "⚠️  cargo not found — skipping Rust TUI. Install Rust (https://rustup.rs) then re-run with --with-tui."
+  fi
+fi
+
 echo ""
 echo "✅ Installed. Next steps:"
 echo ""
@@ -122,6 +141,11 @@ echo "       export MODEL_PRIMARY=gpt-4o                       # model name"
 echo ""
 echo "  2) Run it:"
 echo "       $VENV/bin/coding-agent          # plain CLI"
-echo "       $VENV/bin/coding-agent --tui    # rich TUI"
+echo "       $VENV/bin/coding-agent --tui    # rich TUI (built-in, no extra deps)"
+if [ -n "$TUI_BIN" ]; then
+  echo "       ./$TUI_BIN   # full-screen Rust TUI"
+  echo "         (it spawns the Python core over the JSON protocol; set"
+  echo "          CODING_AGENT_PYTHON=$VENV/bin/python if not on PATH)"
+fi
 echo ""
-echo "  (or 'make run' / 'make test' which use the same venv)"
+echo "  (or 'make run' / 'make test' / 'make tui' which use this checkout)"

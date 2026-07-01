@@ -1,4 +1,4 @@
-.PHONY: venv install test run bench clean
+.PHONY: venv install test run bench tui tui-run clean
 
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -26,6 +26,15 @@ run:
 bench:
 	$(PY) benchmarks/benchmark.py
 
+# Build the full-screen Rust TUI (needs cargo).
+tui:
+	cd tui && cargo build --release
+
+# Build + launch the Rust TUI, pointing it at this venv's python.
+tui-run: tui
+	CODING_AGENT_PYTHON=$(VENV)/bin/python CODING_AGENT_DIR=. ./tui/target/release/coding-agent-tui
+
 clean:
 	rm -rf $(VENV) .pytest_cache
 	find . -type d -name __pycache__ -exec rm -rf {} +
+	cd tui 2>/dev/null && cargo clean 2>/dev/null || true
