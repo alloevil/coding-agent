@@ -77,6 +77,12 @@ class AgentSpawnTool(Tool):
                 "max_turns": {
                     "type": "integer",
                     "description": "Maximum turns for the sub-agent (default: 10)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run the sub-agent as a background job and return a "
+                                   "job_id immediately instead of blocking. Check it with "
+                                   "job_status/job_list; stop it with job_cancel."
                 }
             },
             "required": ["task"]
@@ -94,14 +100,32 @@ class AgentSpawnTool(Tool):
         model = kwargs.get("model")
         max_turns = kwargs.get("max_turns", 10)
         agent_name = kwargs.get("agent")
+        background = kwargs.get("background", False)
 
         if self._parent_agent is None:
             raise ToolExecutionError(self.name, "Parent agent not configured")
 
+        label = agent_name or "subagent"
+
+        # 后台模式：扔进 job 注册表，立即返回 job_id，不阻塞主循环。
+        if background:
+            from ..core.jobs import get_job_registry
+            reg = get_job_registry()
+            parent = self._parent_agent
+
+            def _factory():
+                return _run_subagent(
+                    parent_agent=parent, task=task, label=label,
+                    model=model, max_turns=max_turns, profile_name=agent_name,
+                )
+            job_id = reg.start(_factory, label=label)
+            return (f"Started background job {job_id} ({label}). "
+                    f"Use job_status/job_list to check it, job_cancel to stop it.")
+
         return await _run_subagent(
             parent_agent=self._parent_agent,
             task=task,
-            label=agent_name or "subagent",
+            label=label,
             model=model,
             max_turns=max_turns,
             profile_name=agent_name,

@@ -66,6 +66,7 @@ class CodingAgent:
         from .tools.web_ops import register_web_tools
         from .tools.ask_ops import register_ask_tools
         from .tools.skill_ops import register_skill_tools
+        from .tools.job_ops import register_job_tools
         self.plan_tool = register_plan_tools()
         register_patch_tools()
         register_tdd_tools()
@@ -74,6 +75,8 @@ class CodingAgent:
         self.ask_tool = register_ask_tools(handler=self._ask_user)
         # Skills：注册 skill 工具（渐进式披露的"展开"半步）
         self.skill_tool = register_skill_tools()
+        # 后台任务工具（job_list/status/cancel）
+        register_job_tools()
 
         # 配置驱动的命令 hook（settings.json 风格）
         if getattr(self.config, "hooks", None):
