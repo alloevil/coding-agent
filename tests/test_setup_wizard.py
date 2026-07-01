@@ -90,3 +90,32 @@ def test_cli_wizard_custom_provider(tmp_path):
     assert res["base_url"] == "https://gw/v1"
     assert res["model"] == "mymodel"
     assert res["auto_approve"] is False
+
+
+def test_write_config_rejects_empty_key(tmp_path):
+    import pytest
+    with pytest.raises(ValueError):
+        W.write_config({"provider": "openai", "api_key": "", "model": "gpt-4o"},
+                       home=str(tmp_path / "e"))
+    # 没有写出文件
+    assert not W.global_config_path(str(tmp_path / "e")).exists()
+
+
+def test_cli_wizard_reprompts_empty_key(tmp_path):
+    # 先空一次 → 提示 → 再给真 key
+    ins = iter(["1", "", "sk-real", "", "n"])
+    outs = []
+    res = W.run_cli_wizard(input_fn=lambda p: next(ins),
+                           output_fn=outs.append, home=str(tmp_path / "r"))
+    assert res["api_key"] == "sk-real"
+    assert any("required" in o for o in outs)
+
+
+def test_cli_wizard_aborts_on_persistent_empty_key(tmp_path):
+    import pytest
+    ins = iter(["1"] + [""] * 8)  # provider ok, key 一直空
+    with pytest.raises(KeyboardInterrupt):
+        W.run_cli_wizard(input_fn=lambda p: next(ins),
+                         output_fn=lambda s: None, home=str(tmp_path / "a"))
+    # 空 key 不落盘
+    assert not W.global_config_path(str(tmp_path / "a")).exists()

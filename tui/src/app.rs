@@ -311,16 +311,20 @@ async fn handle_wizard_key(
                 w.auto_approve = !w.auto_approve;
             }
             (KeyCode::Enter, _) => {
-                let done = w.advance();
-                if done {
-                    let answers = w.answers();
-                    backend.send(&Request::SaveConfig { answers }).await?;
-                    *wizard = None;
-                    // Clear needs_setup NOW (optimistic) so the main loop's
-                    // "needs_setup && wizard.is_none()" guard doesn't immediately
-                    // reopen the wizard before the config_saved event arrives.
-                    // (This was the root cause of needing to run twice.)
-                    state.needs_setup = false;
+                // API key is required — don't advance past the Key step while empty
+                // (otherwise we'd save a blank key and reopen the wizard forever).
+                if w.step == Step::Key && w.key.text().trim().is_empty() {
+                    // ignore Enter; stay on the Key step
+                } else {
+                    let done = w.advance();
+                    if done {
+                        let answers = w.answers();
+                        backend.send(&Request::SaveConfig { answers }).await?;
+                        *wizard = None;
+                        // Clear needs_setup now so the loop guard can't reopen the wizard
+                        // before the config_saved event round-trips.
+                        state.needs_setup = false;
+                    }
                 }
             }
             (KeyCode::Char(c), _) => {
@@ -432,9 +436,15 @@ fn render_wizard(f: &mut Frame, w: &Wizard) {
             Line::from(format!("  {}▌", w.base_url.text())),
         ],
         Step::Key => vec![
-            Line::from("API key:"),
+            Line::from("API key (required):"),
             Line::from(""),
             Line::from(format!("  {}▌", "•".repeat(w.key.text().chars().count()))),
+            Line::from(""),
+            Line::from(if w.key.text().trim().is_empty() {
+                "  (type your key, then Enter)"
+            } else {
+                "  Enter to continue"
+            }),
         ],
         Step::Model => {
             let def = PROVIDERS[w.provider_idx].2;
