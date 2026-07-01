@@ -95,7 +95,12 @@ def build_config_dict(answers: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_config(answers: dict[str, Any], home: str | None = None) -> Path:
-    """把向导答案写入全局 config.json（合并已有内容，不覆盖无关键）。返回路径。"""
+    """把向导答案写入全局 config.json（合并已有内容，不覆盖无关键）。返回路径。
+
+    拒绝写入空 api_key —— 否则 needs_setup 永远为真、每次启动都进向导。
+    """
+    if not str(answers.get("api_key", "")).strip():
+        raise ValueError("api_key is required and must not be empty")
     path = global_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing: dict[str, Any] = {}
@@ -141,8 +146,17 @@ def run_cli_wizard(input_fn: Callable[[str], str] = input,
         proto = input_fn("Protocol [openai/anthropic] (openai): ").strip() or "openai"
         answers["protocol"] = "anthropic" if proto.startswith("a") else "openai"
 
-    # 3. API key
-    answers["api_key"] = input_fn("API key: ").strip()
+    # 3. API key —— 必填，空则重问（否则会存空 key，每次启动都进向导）
+    key = input_fn("API key: ").strip()
+    attempts = 0
+    while not key and attempts < 5:
+        output_fn("  ⚠️  API key is required.")
+        key = input_fn("API key: ").strip()
+        attempts += 1
+    if not key:
+        output_fn("  No API key provided — setup aborted.")
+        raise KeyboardInterrupt("empty api key")
+    answers["api_key"] = key
 
     # 4. model
     default_model = preset["default_model"] or "(required)"
