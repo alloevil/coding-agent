@@ -3,7 +3,8 @@
 **Date**: 2026-07-01  
 **Model**: `azure_openai/gpt-4.1-mini` (via OpenClaw proxy)  
 **Platform**: Linux 5.10.134 (x64), Python 3.13.5  
-**Commit**: master + fix/tdd-python-executable (#27)
+**Commit**: master + fix/tdd-python-executable (#27) + TEST_REPORT.md + agent_test.py
+**Code Version**: Latest (post PR #27 merge, sys.executable fix applied)
 
 ---
 
@@ -48,13 +49,17 @@ No pre-defined verification logic — each task is verified by running the gener
 
 ---
 
-## Combined Summary
+## Combined Summary (3 Runs)
 
 | Test Method | Cases | Pass Rate | Avg Turns | Avg Time |
 |------------|-------|-----------|-----------|----------|
-| **Automated Benchmark** | 58 | 93.1% (54/58) | 4.6 | 33.8s |
-| **Agent Real-Task** | 7 | 100% (7/7) | 5.7 | 36.3s |
-| **Combined** | 65 | **93.8% (61/65)** | 4.7 | 34.1s |
+| **Automated Benchmark (Run 1)** | 58 | 93.1% (54/58) | 4.6 | 33.8s |
+| **Automated Benchmark (Run 2, 39/58)** | 39 | 97.4% (38/39) | 4.2 | 42.8s |
+| **Agent Real-Task (Run 1)** | 7 | 100% (7/7) | 5.7 | 36.3s |
+| **Agent Real-Task (Run 2)** | 7 | 100% (7/7) | 5.7 | 28.9s |
+| **Agent Real-Task (Run 3)** | 7 | 100% (7/7) | 5.7 | 28.9s |
+
+**Consistency**: All 3 agent test runs achieved 100%. Benchmark failed the same case (`understand_03`) in both runs.
 
 ### By Difficulty (Combined)
 
