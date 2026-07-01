@@ -25,6 +25,7 @@ tokenizer = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
 ]
 
 [project.scripts]
@@ -36,3 +37,22 @@ include = ["coding_agent*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["coding_agent"]
+omit = [
+    "*/__pycache__/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+# 覆盖率地板：低于此值 `make cov` / CI 失败，防止新代码不写测试导致回退。
+# 当前实测 ~77%；留 2 个点缓冲。抬升后可同步上调这个数。
+fail_under = 75
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]

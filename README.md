@@ -203,9 +203,15 @@ pip install -e ".[dev]"
 # Run tests
 pytest
 
+# Run tests with the coverage gate (fails if total < 75%, see pyproject.toml)
+make cov
+
 # Run benchmarks
 python benchmarks/benchmark.py
 ```
+
+CI (GitHub Actions) runs the Python suite with the coverage gate and builds +
+tests the Rust TUI on every push and PR to `master`.
 
 ## 📚 References
 

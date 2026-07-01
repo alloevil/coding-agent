@@ -1,4 +1,4 @@
-.PHONY: venv install test run bench tui tui-run clean
+.PHONY: venv install test cov run bench tui tui-run clean
 
 VENV := .venv
 PY := $(VENV)/bin/python
@@ -18,6 +18,11 @@ install: venv
 test:
 	$(PY) -m pytest -q
 
+# Run tests with coverage and enforce the floor (fail_under in pyproject.toml).
+# Prints a per-file report; exits non-zero if total coverage drops below the gate.
+cov:
+	$(PY) -m pytest -q --cov --cov-report=term-missing --cov-report=xml
+
 # Launch the interactive agent (needs API key env vars; see README).
 run:
 	$(VENV)/bin/coding-agent
@@ -35,6 +40,6 @@ tui-run: tui
 	CODING_AGENT_PYTHON=$(VENV)/bin/python CODING_AGENT_DIR=. ./tui/target/release/coding-agent-tui
 
 clean:
-	rm -rf $(VENV) .pytest_cache
+	rm -rf $(VENV) .pytest_cache .coverage coverage.xml htmlcov
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	cd tui 2>/dev/null && cargo clean 2>/dev/null || true
