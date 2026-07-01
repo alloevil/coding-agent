@@ -25,6 +25,17 @@ use crate::composer::Composer;
 use crate::proto::{Event, Request};
 use crate::setup::{Step, Wizard, PROVIDERS};
 
+/// Append a debug line to the file named by CODING_AGENT_DEBUG (if set).
+/// Lets us trace the real execution path on a user's machine.
+fn dbg_log(msg: &str) {
+    if let Ok(path) = std::env::var("CODING_AGENT_DEBUG") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+}
+
 /// Whether the agent is idle (accepting input) or busy (running a turn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -187,7 +198,11 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) ->
     // fail with a cryptic raw-mode OS error — exit clearly so the launcher can
     // fall back to the CLI.
     use crossterm::tty::IsTty;
-    if !std::io::stdout().is_tty() || !std::io::stdin().is_tty() {
+    let out_tty = std::io::stdout().is_tty();
+    let in_tty = std::io::stdin().is_tty();
+    dbg_log(&format!("run start: force_setup={force_setup} stdout_tty={out_tty} stdin_tty={in_tty}"));
+    if !out_tty || !in_tty {
+        dbg_log("EXIT: not a tty -> exit 3");
         eprintln!("coding-agent: not an interactive terminal — use `coding-agent --cli`, \
                    or run in a real terminal for the full-screen TUI.");
         backend.shutdown().await;
@@ -244,16 +259,18 @@ async fn run_loop(
             maybe_ev = backend.events.recv() => {
                 match maybe_ev {
                     Some(ev) => {
+                        dbg_log(&format!("event: {} (needs_setup before apply={})", ev.kind, state.needs_setup));
                         let ended = state.apply(&ev);
                         if ended {
                             *turn_running = false;
                         }
                         // Open the wizard when the backend asks for setup.
                         if state.needs_setup && wizard.is_none() {
+                            dbg_log("-> opening wizard (needs_setup && wizard none)");
                             *wizard = Some(Wizard::new());
                         }
                     }
-                    None => return Ok(()), // backend closed
+                    None => { dbg_log("EXIT: backend channel closed"); return Ok(()); }
                 }
             }
             // Keyboard event
