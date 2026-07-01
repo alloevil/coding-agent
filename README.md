@@ -57,7 +57,8 @@ Or clone first, then install:
 ```bash
 git clone https://github.com/alloevil/coding-agent.git
 cd coding-agent
-./install.sh                 # core + dev deps
+./install.sh                 # core + dev deps + full-screen TUI (needs cargo)
+# ./install.sh --no-tui      # skip the Rust TUI (no cargo)
 # ./install.sh --all         # also tiktoken (token counting) + playwright (browser tools)
 ```
 
