@@ -61,6 +61,8 @@ pub struct AppState {
     pub turn: u64,
     pub last_error: Option<String>,
     pub should_quit: bool,
+    /// Scroll offset from the bottom (0 = follow tail; N = scrolled up N lines).
+    pub scroll: usize,
 }
 
 impl AppState {
@@ -146,6 +148,24 @@ impl AppState {
         }
         out
     }
+
+    /// Scroll up by n lines (toward older). total = total lines, view = visible rows.
+    pub fn scroll_up(&mut self, n: usize, total: usize, view: usize) {
+        let max = total.saturating_sub(view);
+        self.scroll = (self.scroll + n).min(max);
+    }
+
+    /// Scroll down by n lines (toward newer / tail).
+    pub fn scroll_down(&mut self, n: usize) {
+        self.scroll = self.scroll.saturating_sub(n);
+    }
+
+    /// Given total lines and visible rows, the first line index to render,
+    /// honoring the scroll offset (0 = follow tail).
+    pub fn view_start(&self, total: usize, view: usize) -> usize {
+        let tail_start = total.saturating_sub(view);
+        tail_start.saturating_sub(self.scroll)
+    }
 }
 
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
@@ -223,16 +243,30 @@ async fn handle_key(
             use crossterm::event::KeyModifiers as M;
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
+                (KeyCode::Esc, _) => {
+                    // Interrupt a running turn (relies on concurrent protocol).
+                    if *turn_running {
+                        backend.send(&Request::Interrupt).await?;
+                    }
+                }
                 (KeyCode::Enter, _) => {
                     if !*turn_running {
                         let text = composer.take();
                         if !text.trim().is_empty() {
                             state.push_user(&text);
+                            state.scroll = 0; // follow tail on new input
                             backend.send(&Request::UserInput { content: text, session_id: None }).await?;
                             *turn_running = true;
                         }
                     }
                 }
+                (KeyCode::Up, _) => composer.history_prev(),
+                (KeyCode::Down, _) => composer.history_next(),
+                (KeyCode::PageUp, _) => {
+                    let total = state.render_lines().len();
+                    state.scroll_up(10, total, 10); // conservative page; clamps in render
+                }
+                (KeyCode::PageDown, _) => state.scroll_down(10),
                 (KeyCode::Char(c), _) => composer.insert(c),
                 (KeyCode::Backspace, _) => composer.backspace(),
                 (KeyCode::Delete, _) => composer.delete(),
@@ -266,11 +300,12 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         chunks[0],
     );
 
-    // Transcript (show the tail that fits)
+    // Transcript (honor scroll offset; 0 = follow tail)
     let lines = state.render_lines();
     let height = chunks[1].height.saturating_sub(2) as usize; // minus borders
-    let start = lines.len().saturating_sub(height);
-    let visible: Vec<Line> = lines[start..]
+    let start = state.view_start(lines.len(), height);
+    let end = (start + height).min(lines.len());
+    let visible: Vec<Line> = lines[start..end]
         .iter()
         .map(|l| {
             if l.starts_with("You:") {
@@ -280,9 +315,14 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
             }
         })
         .collect();
+    let conv_title = if state.scroll > 0 {
+        format!("conversation (scrolled ↑{} — PageDn to follow)", state.scroll)
+    } else {
+        "conversation".to_string()
+    };
     f.render_widget(
         Paragraph::new(visible)
-            .block(Block::default().borders(Borders::ALL).title("conversation"))
+            .block(Block::default().borders(Borders::ALL).title(conv_title))
             .wrap(Wrap { trim: false }),
         chunks[1],
     );
@@ -296,7 +336,8 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     );
 
     // Status line
-    let status = format!(" [{}]  Ctrl-C quit", state.status_str);
+    let hint = if turn_running { "Esc stop · Ctrl-C quit" } else { "↑↓ history · PgUp/PgDn scroll · Ctrl-C quit" };
+    let status = format!(" [{}]  {hint}", state.status_str);
     f.render_widget(
         Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
         chunks[3],
@@ -366,5 +407,36 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"ready\",\"model\":\"claude-opus-4-8\"}"));
         assert_eq!(s.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn view_start_follows_tail_by_default() {
+        let s = AppState::new();
+        // 100 lines, 10 visible, no scroll → start at 90
+        assert_eq!(s.view_start(100, 10), 90);
+        // fewer lines than view → start at 0
+        assert_eq!(s.view_start(5, 10), 0);
+    }
+
+    #[test]
+    fn scroll_up_clamps_and_offsets_view() {
+        let mut s = AppState::new();
+        s.scroll_up(5, 100, 10);
+        assert_eq!(s.scroll, 5);
+        assert_eq!(s.view_start(100, 10), 85); // 90 tail - 5 scroll
+        // clamp: can't scroll past the top (max = 100-10 = 90)
+        s.scroll_up(1000, 100, 10);
+        assert_eq!(s.scroll, 90);
+        assert_eq!(s.view_start(100, 10), 0);
+    }
+
+    #[test]
+    fn scroll_down_returns_to_tail() {
+        let mut s = AppState::new();
+        s.scroll_up(20, 100, 10);
+        s.scroll_down(5);
+        assert_eq!(s.scroll, 15);
+        s.scroll_down(1000); // clamps at 0 (tail)
+        assert_eq!(s.scroll, 0);
     }
 }
