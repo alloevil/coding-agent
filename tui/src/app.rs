@@ -182,6 +182,18 @@ impl AppState {
 
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
 pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) -> std::io::Result<()> {
+    // A full-screen TUI needs a real interactive terminal. When stdout/stdin
+    // isn't a TTY (piped, non-interactive shell, some IDE terminals), don't
+    // fail with a cryptic raw-mode OS error — exit clearly so the launcher can
+    // fall back to the CLI.
+    use crossterm::tty::IsTty;
+    if !std::io::stdout().is_tty() || !std::io::stdin().is_tty() {
+        eprintln!("coding-agent: not an interactive terminal — use `coding-agent --cli`, \
+                   or run in a real terminal for the full-screen TUI.");
+        backend.shutdown().await;
+        std::process::exit(3); // distinct code so the launcher can route to CLI
+    }
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;

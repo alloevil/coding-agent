@@ -146,8 +146,9 @@ cat > "$LAUNCHER" <<LAUNCHER_EOF
 export CODING_AGENT_PYTHON="$INSTALL_DIR/.venv/bin/python"
 export CODING_AGENT_DIR="$INSTALL_DIR"
 TUI="$INSTALL_DIR/tui/target/release/coding-agent-tui"
-# --setup / --tui / other flags pass through. Rust TUI is default when built.
-if [ -x "\$TUI" ] && [ "\${1:-}" != "--cli" ]; then
+# Rust TUI is the default when built AND we're on an interactive terminal.
+# Not a TTY (piped / non-interactive) or --cli → the Python CLI.
+if [ -x "\$TUI" ] && [ "\${1:-}" != "--cli" ] && [ -t 0 ] && [ -t 1 ]; then
   exec "\$TUI" "\$@"
 else
   [ "\${1:-}" = "--cli" ] && shift
