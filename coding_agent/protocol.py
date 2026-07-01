@@ -199,6 +199,29 @@ class AgentProtocol:
             self._send_event("interrupted", {
                 "message": "Interrupt signal sent"
             })
+
+        elif req_type == "save_config":
+            # 引导式配置：前端把答案发来，写入全局 config.json 并热更当前 client。
+            from .core.setup_wizard import write_config
+            answers = request.get("answers", {})
+            try:
+                path = write_config(answers)
+                # 热更新当前会话的模型客户端（无需重启即可用新配置）
+                from .core.config import AgentConfig
+                new_cfg = AgentConfig.resolve()
+                self.config.api_key = new_cfg.api_key
+                self.config.model = new_cfg.model
+                self.config.api_base_url = new_cfg.api_base_url
+                self.config.protocol = getattr(new_cfg, "protocol", "openai")
+                self.model_client.api_key = new_cfg.api_key
+                self.model_client.model = new_cfg.model
+                self.model_client.base_url = new_cfg.api_base_url.rstrip("/")
+                self.model_client.protocol = getattr(new_cfg, "protocol", "openai")
+                self.model_client.extra_headers = getattr(new_cfg, "extra_headers", {}) or {}
+                self._send_event("config_saved", {"path": str(path),
+                                                  "model": new_cfg.model})
+            except Exception as e:  # noqa: BLE001
+                self._send_event("error", {"error": f"save_config failed: {e}"})
     
     async def _run_turn(self, content: str) -> None:
         """运行一个 turn 并转发事件；结束发 session_state。作为独立任务运行，
@@ -248,7 +271,8 @@ class AgentProtocol:
         self._send_event("ready", {
             "model": self.config.model,
             "tools": len(self.tool_registry.get_all_tools()),
-            "auto_approve": self.config.auto_approve
+            "auto_approve": self.config.auto_approve,
+            "needs_setup": not self.config.api_key,
         })
 
         loop = asyncio.get_event_loop()
@@ -284,8 +308,10 @@ class AgentProtocol:
 
 async def main() -> None:
     """入口函数"""
-    config = AgentConfig.from_env()
-    
+    # 优先分层解析（读全局 config.json，让上次向导保存的配置生效），
+    # 再让 init 首行 / env 覆盖。
+    config = AgentConfig.resolve()
+
     if not config.api_key:
         # 尝试从 stdin 读取配置
         import sys
@@ -294,7 +320,8 @@ async def main() -> None:
             try:
                 init_config = json.loads(first_line)
                 if init_config.get("type") == "init":
-                    config.api_key = init_config.get("api_key", "")
+                    if init_config.get("api_key"):
+                        config.api_key = init_config["api_key"]
                     config.api_base_url = init_config.get("api_base_url", config.api_base_url)
                     config.model = init_config.get("model", config.model)
                     config.auto_approve = init_config.get("auto_approve", config.auto_approve)
@@ -304,11 +331,9 @@ async def main() -> None:
                         config.extra_headers = init_config["extra_headers"]
             except json.JSONDecodeError:
                 pass
-    
-    if not config.api_key:
-        print(json.dumps({"type": "error", "error": "No API key configured"}), flush=True)
-        sys.exit(1)
-    
+
+    # 无 key 也照常启动：ready 事件会带 needs_setup=true，前端可弹配置向导，
+    # 通过 save_config 完成配置后再开始对话。
     protocol = AgentProtocol(config)
     await protocol.run()
 
