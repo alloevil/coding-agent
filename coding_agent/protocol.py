@@ -43,6 +43,10 @@ class AgentProtocol:
     
     def __init__(self, config: AgentConfig):
         self.config = config
+        # Anthropic 协议下较新的 Claude 模型（Opus 4.8 等，Bedrock 承载）
+        # 已弃用 temperature，显式传会 400。除非用户显式设过，否则省略。
+        if getattr(config, "protocol", "openai") == "anthropic":
+            config.temperature = None
         
         # 初始化工具
         register_file_tools()
@@ -76,6 +80,8 @@ class AgentProtocol:
             model=config.model,
             max_tokens=config.max_tokens,
             temperature=config.temperature,
+            extra_headers=getattr(config, "extra_headers", None),
+            protocol=getattr(config, "protocol", "openai"),
         )
         
         # 设置模型调用
@@ -90,6 +96,8 @@ class AgentProtocol:
         
         # 当前状态
         self.state: AgentState | None = None
+        # 当前正在运行的 turn 任务（None 表示空闲）
+        self._turn_task: asyncio.Task | None = None
         
         # 权限确认队列（等待 TUI 响应）
         self._permission_event = asyncio.Event()
@@ -144,7 +152,7 @@ class AgentProtocol:
         if req_type == "user_input":
             content = request.get("content", "")
             session_id = request.get("session_id")
-            
+
             # 加载或创建会话
             if session_id:
                 self.state = self.session_store.load_state(session_id)
@@ -156,16 +164,10 @@ class AgentProtocol:
             # 把计划工具绑定到当前会话状态
             self.plan_tool.bind_state(self.state)
 
-            # 运行 agent
-            async for event in self.agent_loop.run(self.state, content):
-                self._forward_event(event)
-            
-            # 发送完成事件
-            self._send_event("session_state", {
-                "session_id": self.state.session_id,
-                "turn_count": self.state.turn_count
-            })
-        
+            # 作为独立任务运行 turn，使 handle_request 立即返回、
+            # dispatcher 能继续读取后续请求（如运行期间的 interrupt）。
+            self._turn_task = asyncio.ensure_future(self._run_turn(content))
+
         elif req_type == "permission_response":
             self._permission_result = request.get("approved", False)
             self._permission_event.set()
@@ -198,6 +200,22 @@ class AgentProtocol:
                 "message": "Interrupt signal sent"
             })
     
+    async def _run_turn(self, content: str) -> None:
+        """运行一个 turn 并转发事件；结束发 session_state。作为独立任务运行，
+        使 stdin 读取不被阻塞（运行期间可处理 interrupt）。"""
+        try:
+            async for event in self.agent_loop.run(self.state, content):
+                self._forward_event(event)
+        except Exception as e:  # noqa: BLE001
+            self._send_event("error", {"error": str(e)})
+        finally:
+            if self.state is not None:
+                self._send_event("session_state", {
+                    "session_id": self.state.session_id,
+                    "turn_count": self.state.turn_count,
+                })
+            self._turn_task = None
+
     def _forward_event(self, event: AgentEventData) -> None:
         """转发 agent 事件到 stdout"""
         event_map = {
@@ -218,34 +236,50 @@ class AgentProtocol:
         self._send_event(event_type, event.data)
     
     async def run(self) -> None:
-        """主循环：从 stdin 读取请求"""
+        """
+        主循环：并发地从 stdin 读请求 + 执行 turn。
+
+        关键：stdin 读取与 turn 执行解耦。一个 reader 任务持续把请求投入队列，
+        dispatcher 逐条处理。user_input 的 turn 作为独立任务运行（见 handle_request），
+        因此运行期间 reader 仍能读到 interrupt 请求并即时调用 agent_loop.interrupt()
+        ——这是键盘 Esc 中断能生效的前提。
+        """
         # 发送就绪信号
         self._send_event("ready", {
             "model": self.config.model,
             "tools": len(self.tool_registry.get_all_tools()),
             "auto_approve": self.config.auto_approve
         })
-        
+
         loop = asyncio.get_event_loop()
-        
-        while True:
-            try:
-                # 从 stdin 读取一行
+        request_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _reader() -> None:
+            while True:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
                 if not line:
-                    break  # EOF
-                
+                    await request_queue.put(None)  # EOF
+                    return
                 line = line.strip()
                 if not line:
                     continue
-                
-                request = json.loads(line)
-                await self.handle_request(request)
-                
-            except json.JSONDecodeError as e:
-                self._send_event("error", {"error": f"Invalid JSON: {e}"})
-            except Exception as e:
-                self._send_event("error", {"error": str(e)})
+                try:
+                    await request_queue.put(json.loads(line))
+                except json.JSONDecodeError as e:
+                    self._send_event("error", {"error": f"Invalid JSON: {e}"})
+
+        reader_task = asyncio.ensure_future(_reader())
+        try:
+            while True:
+                request = await request_queue.get()
+                if request is None:
+                    break  # EOF
+                try:
+                    await self.handle_request(request)
+                except Exception as e:  # noqa: BLE001
+                    self._send_event("error", {"error": str(e)})
+        finally:
+            reader_task.cancel()
 
 
 async def main() -> None:
@@ -264,6 +298,10 @@ async def main() -> None:
                     config.api_base_url = init_config.get("api_base_url", config.api_base_url)
                     config.model = init_config.get("model", config.model)
                     config.auto_approve = init_config.get("auto_approve", config.auto_approve)
+                    if init_config.get("protocol"):
+                        config.protocol = init_config["protocol"]
+                    if init_config.get("extra_headers"):
+                        config.extra_headers = init_config["extra_headers"]
             except json.JSONDecodeError:
                 pass
     
