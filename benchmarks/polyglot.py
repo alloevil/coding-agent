@@ -51,6 +51,26 @@ def _run_python_tests(workdir: Path, test_files: list[str]) -> tuple[bool, str]:
     return proc.returncode == 0, (proc.stdout + proc.stderr)[-2000:]
 
 
+def _run_rust_tests(workdir: Path, test_files: list[str]) -> tuple[bool, str]:
+    # cargo test 会自动发现 tests/ 下的集成测试；--include-ignored 跑全部
+    proc = subprocess.run(["cargo", "test", "--", "--include-ignored"],
+                          cwd=workdir, capture_output=True, text=True, timeout=300)
+    return proc.returncode == 0, (proc.stdout + proc.stderr)[-2500:]
+
+
+def _run_go_tests(workdir: Path, test_files: list[str]) -> tuple[bool, str]:
+    proc = subprocess.run(["go", "test", "./..."],
+                          cwd=workdir, capture_output=True, text=True, timeout=180)
+    return proc.returncode == 0, (proc.stdout + proc.stderr)[-2500:]
+
+
+_TEST_RUNNERS = {
+    "python": _run_python_tests,
+    "rust": _run_rust_tests,
+    "go": _run_go_tests,
+}
+
+
 def _discover_exercises(lang_dir: Path) -> list[Path]:
     practice = lang_dir / "exercises" / "practice"
     if not practice.is_dir():
@@ -94,8 +114,10 @@ def _build_prompt(ex: dict) -> str:
 
 class PolyglotRunner:
     def __init__(self, api_key: str, base_url: str, model: str,
-                 protocol: str, extra_headers: dict, max_turns: int = 30):
+                 protocol: str, extra_headers: dict, lang: str = "python",
+                 max_turns: int = 30):
         self.model = model
+        self.lang = lang
         self.max_turns = max_turns
         self.model_client = ModelClient(
             api_key=api_key, base_url=base_url, model=model,
@@ -108,13 +130,19 @@ class PolyglotRunner:
 
     async def run_exercise(self, ex: dict) -> dict:
         workdir = Path(tempfile.mkdtemp(prefix=f"poly_{ex['name']}_"))
-        # 只复制 solution + test 文件（不给 example/.meta）
+        # 只复制 solution + test 文件（不给 example/.meta 里的参考解）
         for fname in ex["solution"] + ex["test"]:
             src = ex["dir"] / fname
             if src.is_file():
                 dst = workdir / fname
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+        # Rust: tests.toml 控制哪些测试启用（不在 config.files 里，但需要它）
+        if self.lang == "rust":
+            tt = ex["dir"] / ".meta" / "tests.toml"
+            if tt.is_file():
+                (workdir / ".meta").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tt, workdir / ".meta" / "tests.toml")
 
         registry = ToolRegistry()
         register_file_tools(registry)
@@ -134,7 +162,8 @@ class PolyglotRunner:
                     f"You are a coding agent working in {workdir}. Implement the "
                     f"solution so the existing test suite passes. Edit only the "
                     f"solution file(s); never modify the tests. Verify by running the "
-                    f"tests yourself (tdd_run_tests or pytest) before finishing."
+                    f"tests yourself via shell_exec before finishing "
+                    f"(python: pytest; rust: `cargo test`; go: `go test ./...`)."
                 ),
             )
             agent = AgentLoop(config=config, tool_registry=registry)
@@ -151,9 +180,10 @@ class PolyglotRunner:
                         "error": f"agent error: {type(e).__name__}: {e}",
                         "turns": turns, "seconds": time.time() - start}
 
-            # 跑测试判分
+            # 跑测试判分（按语言选 runner）
+            runner_fn = _TEST_RUNNERS.get(self.lang, _run_python_tests)
             try:
-                passed, output = _run_python_tests(workdir, ex["test"])
+                passed, output = runner_fn(workdir, ex["test"])
             except subprocess.TimeoutExpired:
                 passed, output = False, "test timeout"
             return {"name": ex["name"], "passed": passed,
@@ -198,7 +228,8 @@ def main():
     print(f"Polyglot benchmark: {args.lang}, {len(exercises)} exercises, model={args.model}")
     print("=" * 60)
 
-    runner = PolyglotRunner(key, base_url, args.model, protocol, extra_headers)
+    runner = PolyglotRunner(key, base_url, args.model, protocol, extra_headers,
+                            lang=args.lang)
 
     async def run_all():
         results = []
