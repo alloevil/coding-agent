@@ -157,6 +157,27 @@ fi
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
 
+# 7. 装完直接引导配置（若尚未配置且有真终端）。
+#    curl|bash 时 stdin 是管道，向导 input() 读不到键盘 —— 从 /dev/tty 读绕过。
+NEEDS_SETUP=1
+"$VENV/bin/python" - <<'PYCHK' && NEEDS_SETUP=0 || NEEDS_SETUP=1
+import sys
+try:
+    from coding_agent.core.config import AgentConfig
+    from coding_agent.core.setup_wizard import needs_setup
+    sys.exit(0 if not needs_setup(AgentConfig.resolve()) else 1)
+except Exception:
+    sys.exit(1)
+PYCHK
+
+if [ "$NEEDS_SETUP" = "1" ] && [ -e /dev/tty ] && { [ -t 0 ] || true; }; then
+  echo ""
+  echo "🚀 Let's finish setup now."
+  # 从 /dev/tty 读输入（绕过 curl|bash 的管道 stdin）；失败不阻断安装。
+  "$VENV/bin/coding-agent" --setup </dev/tty >/dev/tty 2>&1 || \
+    echo "   (setup skipped — run 'coding-agent --setup' anytime)"
+fi
+
 echo ""
 echo "✅ Installed. Run:  coding-agent"
 echo "   First launch walks you through setup (provider, API key, model) —"

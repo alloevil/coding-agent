@@ -612,7 +612,9 @@ async def main(argv: list[str] | None = None) -> None:
         except (EOFError, KeyboardInterrupt):
             print("\nSetup cancelled.")
             sys.exit(1)
-        config = AgentConfig.resolve()
+        # --setup 是一次性配置动作：配完即退出，不接着进入对话会话。
+        print("Setup complete. Run `coding-agent` to start.")
+        return
 
     # --list-sessions: 列出最近会话后退出（不需要 API key）
     if opts["list_sessions"]:
