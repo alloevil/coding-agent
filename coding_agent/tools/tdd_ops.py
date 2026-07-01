@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,8 +111,10 @@ class FrameworkDetector:
 class TestRunner:
     """执行测试并解析输出"""
 
+    _PY = sys.executable or "python3"
+
     FRAMEWORK_COMMANDS = {
-        "pytest": "python -m pytest {path} -v --tb=short 2>&1",
+        "pytest": f"{_PY} -m pytest {{path}} -v --tb=short 2>&1",
         "vitest": "npx vitest run {path} --reporter=verbose 2>&1",
         "jest": "npx jest {path} --verbose 2>&1",
         "mocha": "npx mocha {path} --recursive 2>&1",
