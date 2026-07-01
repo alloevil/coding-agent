@@ -271,3 +271,44 @@ def state_dir() -> Path:
     except OSError:
         pass
     return d
+
+
+# 允许 -c 命令行覆盖的字段 → 类型解析（拒绝随便写脏键）。
+_OVERRIDE_KEYS: dict[str, Any] = {
+    "model": str,
+    "api_key": str,
+    "api_base_url": str,
+    "protocol": str,
+    "auto_approve": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
+    "max_tokens": int,
+    "max_turns": int,
+    "max_total_tokens": int,
+    "temperature": lambda s: None if str(s).strip().lower() in ("none", "null", "") else float(s),
+    "stream": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
+    "auto_format": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
+}
+
+
+def apply_cli_overrides(config: "AgentConfig", overrides: list[str]) -> "AgentConfig":
+    """
+    把 `-c key=value` 覆盖应用到已解析的 config（只对本次运行生效，不落盘）。
+
+    对标 codex 的 `-c key=value`。值按类型解析（数字/布尔/None），未知键或坏值
+    抛 ValueError（调用方给出清晰报错）。返回同一个 config（原地修改）。
+    """
+    for raw in overrides or []:
+        if "=" not in raw:
+            raise ValueError(f"bad override {raw!r} — expected KEY=VALUE")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        if key not in _OVERRIDE_KEYS:
+            raise ValueError(
+                f"unknown config key: {key!r}. "
+                f"overridable: {', '.join(sorted(_OVERRIDE_KEYS))}"
+            )
+        try:
+            parsed = _OVERRIDE_KEYS[key](value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"invalid value for {key}: {value!r} ({e})") from e
+        setattr(config, key, parsed)
+    return config

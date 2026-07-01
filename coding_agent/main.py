@@ -9,6 +9,7 @@ Coding Agent - 主入口
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from typing import Any
 
@@ -618,9 +619,13 @@ def _parse_args(argv: list[str]) -> dict[str, Any]:
                    help="Use the rich TUI front-end")
     p.add_argument("--setup", action="store_true",
                    help="Run the guided setup wizard (reconfigure provider/key/model)")
+    p.add_argument("-c", "--config", dest="overrides", action="append", default=[],
+                   metavar="KEY=VALUE",
+                   help="Override a config value for this run only "
+                        "(e.g. -c model=gpt-4o -c protocol=anthropic). Not persisted.")
     args = p.parse_args(argv)
     return {"resume": args.resume, "list_sessions": args.list_sessions,
-            "tui": args.tui, "setup": args.setup}
+            "tui": args.tui, "setup": args.setup, "overrides": args.overrides}
 
 
 _CONFIG_USAGE = """Usage:
@@ -687,6 +692,34 @@ def _warn_if_invalid(config: AgentConfig) -> None:
         print()
 
 
+def _maybe_prompt_trust() -> bool:
+    """
+    trust directory：首次在当前目录运行时询问是否信任。返回是否信任。
+
+    - 已在信任列表 → True，不打扰。
+    - 非交互终端（无 stdin tty）→ 视为「不信任」返回 False（保守），不阻塞。
+    - 交互 → 询问 y/N；y 记录到全局配置并返回 True，其余返回 False。
+    """
+    from .core import trust
+    cwd = os.getcwd()
+    if trust.is_trusted(cwd):
+        return True
+    if not sys.stdin.isatty():
+        return False
+    print(f"\n🔐 First run in this directory:\n   {cwd}")
+    print("   Trust it? Trusted dirs let the agent write/run without asking each time.")
+    try:
+        ans = input("   Trust this directory? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        trust.trust_directory(cwd)
+        print("   ✅ Trusted. (undo by editing trusted_dirs in config.json)\n")
+        return True
+    print("   ↩︎  Not trusted — writes/commands will ask for confirmation.\n")
+    return False
+
+
 async def main(argv: list[str] | None = None) -> None:
     """主函数"""
     import sys as _sys
@@ -703,6 +736,11 @@ async def main(argv: list[str] | None = None) -> None:
         await _run_doctor_cmd(raw[1:])
         return
 
+    # `coding-agent update`：拉最新代码 + 重装 + 重编 TUI，跑完即退出。
+    if raw and raw[0] == "update":
+        from .core.updater import run_update
+        sys.exit(run_update())
+
     opts = _parse_args(raw)
 
     config = AgentConfig.resolve()
@@ -716,6 +754,16 @@ async def main(argv: list[str] | None = None) -> None:
             print("\nSetup cancelled.")
             sys.exit(1)
         config = AgentConfig.resolve()
+
+    # -c key=value 命令行覆盖（只对本次运行生效，不落盘）。放在向导之后，
+    # 使临时覆盖优先于刚写的配置。
+    if opts.get("overrides"):
+        from .core.config import apply_cli_overrides
+        try:
+            apply_cli_overrides(config, opts["overrides"])
+        except ValueError as e:
+            print(f"❌ {e}")
+            sys.exit(2)
 
     # --list-sessions: 列出最近会话后退出（不需要 API key）
     if opts["list_sessions"]:
@@ -749,7 +797,15 @@ async def main(argv: list[str] | None = None) -> None:
     # 启动前校验：配错了明确提示（protocol/base_url/model/key），不静默失败。
     _warn_if_invalid(config)
 
+    # trust directory：首次在此目录运行 → 询问是否信任。拒绝/未答 → 守卫写与执行
+    # （即使 auto_approve，写/执行仍逐次确认）。CLI 交互路径；TUI 走自己的 onboarding。
+    trust_this_dir = _maybe_prompt_trust()
+
     agent = CodingAgent(config)
+    if not trust_this_dir:
+        # 未信任目录：强制写/执行逐次确认（关掉本会话的 auto_approve），
+        # 与 Codex「未信任目录不自动执行」一致。deny 规则仍生效；READ 不受影响。
+        agent.agent_loop.permission_policy.auto_approve = False
 
     # --resume: 恢复指定/选中的会话
     resume_id = opts["resume"]

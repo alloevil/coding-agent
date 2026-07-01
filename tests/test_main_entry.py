@@ -151,3 +151,25 @@ async def test_main_doctor_subcommand_returns_early(isolated_home, capsys, monke
         await M.main(["doctor", "--json"])
     # 输出是 doctor 的 JSON，而不是 agent 会话
     assert "checks" in capsys.readouterr().out
+
+
+async def test_main_update_subcommand_returns_early(isolated_home, monkeypatch):
+    """`update` 子命令应调 run_update 并退出，不构建 agent。"""
+    called = {"update": False}
+
+    def fake_update(*a, **k):
+        called["update"] = True
+        return 0
+
+    monkeypatch.setattr("coding_agent.core.updater.run_update", fake_update)
+    monkeypatch.setattr(M, "CodingAgent",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no agent")))
+    with pytest.raises(SystemExit) as e:
+        await M.main(["update"])
+    assert e.value.code == 0
+    assert called["update"] is True
+
+
+def test_parse_args_collects_c_overrides():
+    opts = M._parse_args(["-c", "model=x", "-c", "protocol=anthropic"])
+    assert opts["overrides"] == ["model=x", "protocol=anthropic"]
