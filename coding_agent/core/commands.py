@@ -205,6 +205,11 @@ def _cmd_status(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", "status")
 
 
+def _cmd_setup(args: str, ctx: CommandContext) -> CommandResult:
+    """重新运行引导配置向导。"""
+    return CommandResult("action", "setup")
+
+
 BUILTINS: dict[str, BuiltinHandler] = {
     "help": _cmd_help,
     "tools": _cmd_tools,
@@ -216,6 +221,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "agent": _cmd_agent,
     "model": _cmd_model,
     "status": _cmd_status,
+    "setup": _cmd_setup,
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,

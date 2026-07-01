@@ -181,7 +181,7 @@ impl AppState {
 }
 
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
-pub async fn run(mut backend: Backend, model_hint: String) -> std::io::Result<()> {
+pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) -> std::io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
@@ -191,7 +191,9 @@ pub async fn run(mut backend: Backend, model_hint: String) -> std::io::Result<()
     state.model = model_hint;
     let mut composer = Composer::new();
     let mut turn_running = false;
-    let mut wizard: Option<Wizard> = None;
+    // --setup forces the wizard open immediately; otherwise it opens when the
+    // backend reports needs_setup via the ready event.
+    let mut wizard: Option<Wizard> = if force_setup { Some(Wizard::new()) } else { None };
 
     let mut keys = crossterm::event::EventStream::new();
 

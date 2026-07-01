@@ -78,15 +78,20 @@ make run
 make bench
 ```
 
-After installing, set your model credentials and run:
+After installing, just run it — the first launch walks you through setup
+(provider, API key, model), no environment variables needed:
 
 ```bash
-export MODEL_API_KEY=sk-...
-export MODEL_BASE_URL=https://api.openai.com/v1   # or your gateway
-export MODEL_PRIMARY=gpt-4o
-.venv/bin/coding-agent          # plain CLI
-.venv/bin/coding-agent --tui    # rich TUI
+coding-agent            # full-screen TUI (guided setup on first run)
+coding-agent --setup    # reconfigure provider / key / model anytime
+coding-agent --cli      # force the plain/rich CLI instead of the TUI
 ```
+
+`install.sh` puts a `coding-agent` launcher on your PATH (`~/.local/bin`). If
+that dir isn't on your PATH, the installer prints the one line to add.
+
+> Advanced: you can skip the wizard by exporting `MODEL_API_KEY` /
+> `MODEL_BASE_URL` / `MODEL_PRIMARY` (or `OPENAI_API_KEY`).
 
 > Avoid `pip install -e .` into a shared conda/global environment — it will
 > upgrade httpx/rich and can break unrelated packages.

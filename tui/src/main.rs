@@ -19,6 +19,21 @@ fn env_or(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Best-effort install dir when CODING_AGENT_DIR is unset: the binary lives at
+/// <install>/tui/target/release/coding-agent-tui, so go three parents up.
+/// Falls back to "." if the exe path can't be resolved.
+fn default_install_dir() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent()            // release/
+            .and_then(|p| p.parent())       // target/
+            .and_then(|p| p.parent())       // tui/
+            .and_then(|p| p.parent())       // <install>/
+            .map(|p| p.to_path_buf()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // Config from env — Anthropic protocol endpoint or OpenAI-compatible.
@@ -43,9 +58,16 @@ async fn main() -> std::io::Result<()> {
             )
         };
 
-    let python = env_or("CODING_AGENT_PYTHON", ".venv/bin/python");
-    let cwd = env_or("CODING_AGENT_DIR", ".");
+    // Resolve where the Python core lives. The launcher sets these; when run
+    // directly, fall back to the binary's own location (../../.. from
+    // tui/target/release/) rather than the current working directory.
+    let install_dir = env::var("CODING_AGENT_DIR").ok().unwrap_or_else(default_install_dir);
+    let python = env::var("CODING_AGENT_PYTHON")
+        .unwrap_or_else(|_| format!("{install_dir}/.venv/bin/python"));
+    let cwd = install_dir;
     let model_hint = model.clone().unwrap_or_default();
+    // --setup forces the config wizard even when already configured.
+    let force_setup = env::args().any(|a| a == "--setup");
 
     let mut backend = Backend::spawn(&python, &cwd)?;
     // Always send init (even with an empty key) so the backend doesn't block
@@ -62,6 +84,6 @@ async fn main() -> std::io::Result<()> {
         })
         .await?;
 
-    app::run(backend, model_hint).await
+    app::run(backend, model_hint, force_setup).await
 }
 
