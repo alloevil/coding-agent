@@ -8,6 +8,7 @@ mod app;
 mod backend;
 mod composer;
 mod proto;
+mod render;
 mod setup;
 
 use std::env;
