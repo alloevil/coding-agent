@@ -8,6 +8,7 @@ mod app;
 mod backend;
 mod composer;
 mod proto;
+mod setup;
 
 use std::env;
 
@@ -42,16 +43,14 @@ async fn main() -> std::io::Result<()> {
             )
         };
 
-    if api_key.is_empty() {
-        eprintln!("Error: set ANTHROPIC_AUTH_TOKEN (+ ANTHROPIC_BASE_URL) or MODEL_API_KEY/OPENAI_API_KEY");
-        std::process::exit(1);
-    }
-
     let python = env_or("CODING_AGENT_PYTHON", ".venv/bin/python");
     let cwd = env_or("CODING_AGENT_DIR", ".");
     let model_hint = model.clone().unwrap_or_default();
 
     let mut backend = Backend::spawn(&python, &cwd)?;
+    // Always send init (even with an empty key) so the backend doesn't block
+    // waiting for it. With no key the backend loads any saved config.json and
+    // reports needs_setup via `ready`, and the TUI shows the setup wizard.
     backend
         .send(&Request::Init {
             api_key,

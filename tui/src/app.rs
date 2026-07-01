@@ -23,6 +23,7 @@ use ratatui::{Frame, Terminal};
 use crate::backend::Backend;
 use crate::composer::Composer;
 use crate::proto::{Event, Request};
+use crate::setup::{Step, Wizard, PROVIDERS};
 
 /// Whether the agent is idle (accepting input) or busy (running a turn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,8 @@ pub struct AppState {
     pub should_quit: bool,
     /// Scroll offset from the bottom (0 = follow tail; N = scrolled up N lines).
     pub scroll: usize,
+    /// Backend reported it needs first-run setup (no API key configured).
+    pub needs_setup: bool,
 }
 
 impl AppState {
@@ -82,6 +85,15 @@ impl AppState {
             "ready" => {
                 self.model = ev.str_field("model").unwrap_or("").to_string();
                 self.status_str = Status::Idle.label().into();
+                self.needs_setup = ev.rest.get("needs_setup")
+                    .and_then(|v| v.as_bool()).unwrap_or(false);
+            }
+            "config_saved" => {
+                self.needs_setup = false;
+                if let Some(m) = ev.str_field("model") {
+                    self.model = m.to_string();
+                }
+                self.transcript.push("🧩 Configuration saved. You're ready to go!".into());
             }
             "thinking" => {
                 self.status_str = Status::Thinking.label().into();
@@ -179,11 +191,12 @@ pub async fn run(mut backend: Backend, model_hint: String) -> std::io::Result<()
     state.model = model_hint;
     let mut composer = Composer::new();
     let mut turn_running = false;
+    let mut wizard: Option<Wizard> = None;
 
     let mut keys = crossterm::event::EventStream::new();
 
     let result = run_loop(&mut term, &mut backend, &mut state, &mut composer,
-                          &mut turn_running, &mut keys).await;
+                          &mut turn_running, &mut wizard, &mut keys).await;
 
     // Restore terminal no matter what.
     disable_raw_mode().ok();
@@ -199,10 +212,15 @@ async fn run_loop(
     state: &mut AppState,
     composer: &mut Composer,
     turn_running: &mut bool,
+    wizard: &mut Option<Wizard>,
     keys: &mut crossterm::event::EventStream,
 ) -> std::io::Result<()> {
     loop {
-        term.draw(|f| render(f, state, composer, *turn_running))?;
+        if let Some(w) = wizard.as_ref() {
+            term.draw(|f| render_wizard(f, w))?;
+        } else {
+            term.draw(|f| render(f, state, composer, *turn_running))?;
+        }
         if state.should_quit {
             return Ok(());
         }
@@ -216,6 +234,10 @@ async fn run_loop(
                         if ended {
                             *turn_running = false;
                         }
+                        // Open the wizard when the backend asks for setup.
+                        if state.needs_setup && wizard.is_none() {
+                            *wizard = Some(Wizard::new());
+                        }
                     }
                     None => return Ok(()), // backend closed
                 }
@@ -223,11 +245,62 @@ async fn run_loop(
             // Keyboard event
             maybe_key = keys.next() => {
                 if let Some(Ok(ct)) = maybe_key {
-                    handle_key(ct, backend, state, composer, turn_running).await?;
+                    if wizard.is_some() {
+                        handle_wizard_key(ct, backend, state, wizard).await?;
+                    } else {
+                        handle_key(ct, backend, state, composer, turn_running).await?;
+                    }
                 }
             }
         }
     }
+}
+
+/// Handle a key while the setup wizard is active.
+async fn handle_wizard_key(
+    ct: CtEvent,
+    backend: &mut Backend,
+    state: &mut AppState,
+    wizard: &mut Option<Wizard>,
+) -> std::io::Result<()> {
+    let w = match wizard.as_mut() {
+        Some(w) => w,
+        None => return Ok(()),
+    };
+    if let CtEvent::Key(k) = ct {
+        if k.kind == KeyEventKind::Release {
+            return Ok(());
+        }
+        use crossterm::event::KeyModifiers as M;
+        match (k.code, k.modifiers) {
+            (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
+            (KeyCode::Up, _) if w.step == Step::Provider => w.provider_up(),
+            (KeyCode::Down, _) if w.step == Step::Provider => w.provider_down(),
+            (KeyCode::Char(' '), _) if w.step == Step::AutoApprove => {
+                w.auto_approve = !w.auto_approve;
+            }
+            (KeyCode::Enter, _) => {
+                let done = w.advance();
+                if done {
+                    let answers = w.answers();
+                    backend.send(&Request::SaveConfig { answers }).await?;
+                    *wizard = None; // leave the wizard; config_saved event confirms
+                }
+            }
+            (KeyCode::Char(c), _) => {
+                if let Some(field) = w.active_field() {
+                    field.insert(c);
+                }
+            }
+            (KeyCode::Backspace, _) => {
+                if let Some(field) = w.active_field() {
+                    field.backspace();
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 async fn handle_key(
@@ -284,6 +357,76 @@ async fn handle_key(
         _ => {}
     }
     Ok(())
+}
+
+/// Render the full-screen setup wizard.
+fn render_wizard(f: &mut Frame, w: &Wizard) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),  // title
+            Constraint::Min(6),     // body
+            Constraint::Length(1),  // hint
+        ])
+        .split(f.area());
+
+    f.render_widget(
+        Paragraph::new(" Welcome to coding-agent — first-run setup")
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        chunks[0],
+    );
+
+    let body: Vec<Line> = match w.step {
+        Step::Provider => {
+            let mut lines = vec![Line::from("Choose a provider (↑↓, Enter):"), Line::from("")];
+            for (i, (_, label, _)) in PROVIDERS.iter().enumerate() {
+                let marker = if i == w.provider_idx { "▶ " } else { "  " };
+                let style = if i == w.provider_idx {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+            }
+            lines
+        }
+        Step::BaseUrl => vec![
+            Line::from("Base URL for your gateway:"),
+            Line::from(""),
+            Line::from(format!("  {}▌", w.base_url.text())),
+        ],
+        Step::Key => vec![
+            Line::from("API key:"),
+            Line::from(""),
+            Line::from(format!("  {}▌", "•".repeat(w.key.text().chars().count()))),
+        ],
+        Step::Model => {
+            let def = PROVIDERS[w.provider_idx].2;
+            vec![
+                Line::from(format!("Model (default: {def}):")),
+                Line::from(""),
+                Line::from(format!("  {}▌", w.model.text())),
+            ]
+        }
+        Step::AutoApprove => vec![
+            Line::from("Auto-approve tool actions without asking? (Space toggles, Enter confirms)"),
+            Line::from(""),
+            Line::from(format!("  [{}] auto-approve", if w.auto_approve { "x" } else { " " })),
+        ],
+        Step::Done => vec![Line::from("Saving…")],
+    };
+    f.render_widget(
+        Paragraph::new(body)
+            .block(Block::default().borders(Borders::ALL).title("setup"))
+            .wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    f.render_widget(
+        Paragraph::new(" Enter: next · Ctrl-C: quit")
+            .style(Style::default().fg(Color::DarkGray)),
+        chunks[2],
+    );
 }
 
 fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bool) {
