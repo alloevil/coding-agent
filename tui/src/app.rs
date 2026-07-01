@@ -127,8 +127,8 @@ impl Status {
 /// Pure UI state — no IO. Event mapping here is unit-tested.
 #[derive(Debug, Default)]
 pub struct AppState {
-    /// Committed transcript lines (already-finalized user/agent/tool text).
-    pub transcript: Vec<String>,
+    /// Typed transcript entries (rendered with per-kind styling).
+    pub transcript: Vec<crate::render::Entry>,
     /// In-progress streaming assistant text (flushed to transcript on done).
     pub live: String,
     pub status_str: String,
@@ -140,6 +140,8 @@ pub struct AppState {
     pub scroll: usize,
     /// Backend reported it needs first-run setup (no API key configured).
     pub needs_setup: bool,
+    /// Animation tick for the busy spinner (bumped on each redraw while busy).
+    pub tick: usize,
 }
 
 impl AppState {
@@ -150,11 +152,12 @@ impl AppState {
     }
 
     pub fn push_user(&mut self, text: &str) {
-        self.transcript.push(format!("You: {text}"));
+        self.transcript.push(crate::render::Entry::User(text.to_string()));
     }
 
     /// Apply one protocol event to the state. Returns true if the turn ended.
     pub fn apply(&mut self, ev: &Event) -> bool {
+        use crate::render::Entry;
         match ev.kind.as_str() {
             "ready" => {
                 self.model = ev.str_field("model").unwrap_or("").to_string();
@@ -167,7 +170,8 @@ impl AppState {
                 if let Some(m) = ev.str_field("model") {
                     self.model = m.to_string();
                 }
-                self.transcript.push("🧩 Configuration saved. You're ready to go!".into());
+                self.transcript.push(Entry::Notice(
+                    "🧩 Configuration saved. You're ready to go!".into()));
             }
             "thinking" => {
                 self.status_str = Status::Thinking.label().into();
@@ -190,18 +194,30 @@ impl AppState {
                     ev.str_field("content").unwrap_or("").to_string()
                 };
                 if !final_text.is_empty() {
-                    self.transcript.push(format!("Agent: {final_text}"));
+                    self.transcript.push(Entry::Agent(final_text));
                 }
             }
             "tool_call" => {
                 self.status_str = Status::RunningTool.label().into();
-                let name = ev.str_field("name").unwrap_or("?");
-                self.transcript.push(format!("  🔧 {name}"));
+                let name = ev.str_field("name").unwrap_or("?").to_string();
+                // Surface a target (path / command) from the call arguments for
+                // a more informative one-liner (e.g. "file_edit  src/main.py").
+                let target = ev.rest.get("arguments")
+                    .and_then(|a| a.get("path").or_else(|| a.get("command")).or_else(|| a.get("file_path")))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("").to_string();
+                self.transcript.push(Entry::ToolCall { name, target });
             }
             "tool_result" => {
-                let is_err = ev.rest.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                let mark = if is_err { "❌" } else { "✅" };
-                self.transcript.push(format!("  {mark}"));
+                let ok = !ev.rest.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                // The result body may contain a unified diff (edit/patch tools);
+                // render_diff_or_text colors it, or dims plain text. Only show a
+                // compact body — skip very long results to keep the transcript clean.
+                let body = ev.str_field("result")
+                    .or_else(|| ev.str_field("diff"))
+                    .unwrap_or("");
+                let body = summarize_result_body(body);
+                self.transcript.push(Entry::ToolResult { ok, body });
             }
             "error" => {
                 self.status_str = Status::Error.label().into();
@@ -213,7 +229,7 @@ impl AppState {
                 // Flush any trailing live text, mark idle, signal turn end.
                 if !self.live.is_empty() {
                     let t = std::mem::take(&mut self.live);
-                    self.transcript.push(format!("Agent: {t}"));
+                    self.transcript.push(Entry::Agent(t));
                 }
                 self.status_str = Status::Idle.label().into();
                 return true;
@@ -223,14 +239,28 @@ impl AppState {
         false
     }
 
-    /// Lines to render in the transcript (committed + in-progress live).
-    pub fn render_lines(&self) -> Vec<String> {
-        let mut out = self.transcript.clone();
+    /// Fully-rendered transcript as styled lines (committed entries + the
+    /// in-progress live stream + any trailing error).
+    pub fn render_lines(&self) -> Vec<Line<'static>> {
+        use crate::render::{render_entry, render_markdown};
+        let mut out: Vec<Line<'static>> = Vec::new();
+        for e in &self.transcript {
+            out.extend(render_entry(e));
+        }
         if !self.live.is_empty() {
-            out.push(format!("Agent: {}▌", self.live));
+            // Live streaming agent text with a cursor.
+            out.push(Line::from(Span::styled(
+                "▌Agent", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+            let mut md = render_markdown(&self.live);
+            // Append cursor to the last live line.
+            if let Some(last) = md.last_mut() {
+                last.spans.push(Span::raw("▌"));
+            }
+            out.extend(md);
         }
         if let Some(e) = &self.last_error {
-            out.push(format!("❌ {e}"));
+            out.push(Line::from(Span::styled(
+                format!("❌ {e}"), Style::default().fg(Color::Red))));
         }
         out
     }
@@ -251,6 +281,31 @@ impl AppState {
     pub fn view_start(&self, total: usize, view: usize) -> usize {
         let tail_start = total.saturating_sub(view);
         tail_start.saturating_sub(self.scroll)
+    }
+}
+
+/// Trim a tool-result body for the transcript: keep unified diffs (they're the
+/// point of the rich view) but cap plain text to a few lines so a huge stdout
+/// dump doesn't flood the conversation.
+fn summarize_result_body(body: &str) -> String {
+    let body = body.trim_end();
+    if body.is_empty() {
+        return String::new();
+    }
+    let is_diff = body.lines().any(|l| l.starts_with("@@") || l.starts_with("+++")
+        || l.starts_with("---"));
+    if is_diff {
+        // diffs: keep up to ~24 lines
+        let lines: Vec<&str> = body.lines().take(24).collect();
+        let mut s = lines.join("\n");
+        if body.lines().count() > 24 { s.push_str("\n     … (diff truncated)"); }
+        s
+    } else {
+        // plain text: first 3 lines only
+        let lines: Vec<&str> = body.lines().take(3).collect();
+        let mut s = lines.join("\n");
+        if body.lines().count() > 3 { s.push_str("\n     …"); }
+        s
     }
 }
 
@@ -317,7 +372,14 @@ async fn run_loop(
             return Ok(());
         }
 
+        // While a turn is running, tick a spinner ~every 100ms so the busy
+        // animation advances even when no backend/key event arrives.
+        let tick = tokio::time::sleep(std::time::Duration::from_millis(100));
+
         tokio::select! {
+            _ = tick, if *turn_running && wizard.is_none() => {
+                state.tick = state.tick.wrapping_add(1);
+            }
             // Backend event
             maybe_ev = backend.events.recv() => {
                 match maybe_ev {
@@ -573,16 +635,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     let height = chunks[1].height.saturating_sub(2) as usize; // minus borders
     let start = state.view_start(lines.len(), height);
     let end = (start + height).min(lines.len());
-    let visible: Vec<Line> = lines[start..end]
-        .iter()
-        .map(|l| {
-            if l.starts_with("You:") {
-                Line::from(Span::styled(l.clone(), Style::default().fg(Color::Green)))
-            } else {
-                Line::from(l.clone())
-            }
-        })
-        .collect();
+    let visible: Vec<Line> = lines[start..end].to_vec();
     let conv_title = if state.scroll > 0 {
         format!("conversation (scrolled ↑{} — PageDn to follow)", state.scroll)
     } else {
@@ -605,19 +658,40 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         chunks[2],
     );
 
-    // Status / completion-hint line
+    // Status / context-aware hint line.
     let cands = composer.slash_candidates();
-    let status = if cands.len() > 1 {
-        format!(" Tab: {}", cands.join(" "))
+    if cands.len() > 1 {
+        // Slash-command completion candidates take over the line.
+        f.render_widget(
+            Paragraph::new(format!(" Tab: {}", cands.join(" ")))
+                .style(Style::default().fg(Color::Cyan)),
+            chunks[3],
+        );
     } else {
-        let hint = if turn_running { "Esc stop · Ctrl-C quit" }
-                   else { "↑↓ history · Tab complete · Shift+Enter newline · PgUp/PgDn scroll" };
-        format!(" [{}]  {hint}", state.status_str)
-    };
-    f.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::DarkGray)),
-        chunks[3],
-    );
+        // Left: status (with spinner when busy). Right: context-aware key hints.
+        let busy = turn_running;
+        let status_span = if busy {
+            Span::styled(
+                format!(" {} {} ", crate::render::spinner_frame(state.tick), state.status_str),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(format!(" [{}] ", state.status_str),
+                         Style::default().fg(Color::DarkGray))
+        };
+        let hint = if state.scroll > 0 {
+            "PgUp/PgDn scroll · End follow · ⏎ send"
+        } else if busy {
+            "esc stop · ⌃C quit"
+        } else {
+            "⏎ send · ⇧⏎ newline · / commands · ↑↓ history · ⌃C quit"
+        };
+        let line = Line::from(vec![
+            status_span,
+            Span::styled(hint, Style::default().fg(Color::DarkGray)),
+        ]);
+        f.render_widget(Paragraph::new(line), chunks[3]);
+    }
 }
 
 #[cfg(test)]
@@ -627,6 +701,16 @@ mod tests {
 
     fn ev(json: &str) -> Event {
         Event::from_line(json).unwrap()
+    }
+
+    /// Flatten a rendered Line into its plain text (spans concatenated).
+    fn line_text(l: &Line) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// All rendered transcript lines flattened to strings.
+    fn rendered(s: &AppState) -> Vec<String> {
+        s.render_lines().iter().map(line_text).collect()
     }
 
     #[test]
@@ -666,7 +750,7 @@ mod tests {
         let ended = s.apply(&ev("{\"type\":\"done\",\"turns\":1}"));
         assert!(ended);
         assert!(s.live.is_empty());
-        assert!(s.transcript.iter().any(|l| l == "Agent: Hello"));
+        assert!(rendered(&s).iter().any(|l| l.contains("Hello")));
     }
 
     #[test]
@@ -684,16 +768,51 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"tool_call\",\"name\":\"grep\"}"));
         s.apply(&ev("{\"type\":\"tool_result\",\"is_error\":false}"));
-        let joined = s.transcript.join("\n");
+        let joined = rendered(&s).join("\n");
         assert!(joined.contains("grep"));
         assert!(joined.contains("✅"));
+    }
+
+    #[test]
+    fn tool_call_surfaces_path_target() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"tool_call\",\"name\":\"file_edit\",\"arguments\":{\"path\":\"src/main.py\"}}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("file_edit"));
+        assert!(joined.contains("src/main.py"));
+    }
+
+    #[test]
+    fn tool_result_diff_body_is_rendered() {
+        let mut s = AppState::new();
+        // result carrying a unified diff → shown with +/- lines
+        s.apply(&ev("{\"type\":\"tool_result\",\"is_error\":false,\"result\":\"@@ -1 +1 @@\\n-old\\n+new\"}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("-old"));
+        assert!(joined.contains("+new"));
+    }
+
+    #[test]
+    fn summarize_caps_plain_text() {
+        let body = "l1\nl2\nl3\nl4\nl5";
+        let s = summarize_result_body(body);
+        assert!(s.contains("l1") && s.contains("l3"));
+        assert!(!s.contains("l5"));
+        assert!(s.contains("…"));
+    }
+
+    #[test]
+    fn summarize_keeps_diff_lines() {
+        let body = "@@ -1 +1 @@\n-a\n+b";
+        let s = summarize_result_body(body);
+        assert!(s.contains("-a") && s.contains("+b"));
     }
 
     #[test]
     fn error_event_records_and_renders() {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"error\",\"error\":\"bad thing\"}"));
-        assert!(s.render_lines().iter().any(|l| l.contains("bad thing")));
+        assert!(rendered(&s).iter().any(|l| l.contains("bad thing")));
     }
 
     #[test]
@@ -701,9 +820,9 @@ mod tests {
         let mut s = AppState::new();
         s.push_user("hi there");
         s.apply(&ev("{\"type\":\"stream_text\",\"text\":\"working\"}"));
-        let lines = s.render_lines();
-        assert!(lines.iter().any(|l| l == "You: hi there"));
-        assert!(lines.iter().any(|l| l.contains("working▌")));
+        let lines = rendered(&s);
+        assert!(lines.iter().any(|l| l.contains("hi there")));
+        assert!(lines.iter().any(|l| l.contains("working")));
     }
 
     #[test]
