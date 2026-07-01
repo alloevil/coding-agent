@@ -1,8 +1,14 @@
 //! Input composer — the bottom input box.
 //!
-//! Phase 2: single-line buffer with cursor, char insert / backspace / delete /
-//! cursor movement. History and completion are pure-function-testable and land
-//! in Phase 3/4; the buffer editing here is written so those extend cleanly.
+//! Single buffer with cursor supporting: char edit, cursor movement, input
+//! history (↑/↓), multi-line (newline insert), paste, and Tab slash-command
+//! completion. Pure/testable; the ratatui rendering lives in app.rs.
+
+/// Known slash commands, for Tab completion. Mirrors core/commands.py BUILTINS.
+pub const SLASH_COMMANDS: &[&str] = &[
+    "help", "tools", "cost", "compact", "plan", "plan-mode", "agents", "agent",
+    "model", "status", "clear", "new", "sessions", "init", "quit", "exit",
+];
 
 /// A single-line editable input buffer with a cursor.
 #[derive(Debug, Default, Clone)]
@@ -89,6 +95,58 @@ impl Composer {
         self.cursor = self.buf.len();
     }
 
+    /// Insert a newline (multi-line input). Enter submits; Shift/Alt+Enter calls this.
+    pub fn newline(&mut self) {
+        self.insert('\n');
+    }
+
+    /// Number of display lines in the buffer.
+    pub fn line_count(&self) -> usize {
+        self.text().split('\n').count()
+    }
+
+    /// If the buffer is a single line starting with `/`, try to Tab-complete the
+    /// slash command. Returns true if it completed/advanced. Behavior:
+    /// - unique prefix match → complete to that command + trailing space
+    /// - multiple matches → complete to the longest common prefix
+    /// - already a full command → no-op (false)
+    pub fn complete_slash(&mut self) -> bool {
+        let t = self.text();
+        if !t.starts_with('/') || t.contains('\n') || t.contains(' ') {
+            return false;
+        }
+        let typed = &t[1..];
+        let matches: Vec<&str> = SLASH_COMMANDS
+            .iter()
+            .copied()
+            .filter(|c| c.starts_with(typed))
+            .collect();
+        if matches.is_empty() {
+            return false;
+        }
+        if matches.len() == 1 {
+            self.set_text(&format!("/{} ", matches[0]));
+            return matches[0] != typed;
+        }
+        // multiple → extend to the longest common prefix
+        let lcp = longest_common_prefix(&matches);
+        if lcp.len() > typed.len() {
+            self.set_text(&format!("/{lcp}"));
+            return true;
+        }
+        false
+    }
+
+    /// The current slash-command completion candidates (for a hint line).
+    pub fn slash_candidates(&self) -> Vec<&'static str> {
+        let t = self.text();
+        if !t.starts_with('/') || t.contains('\n') || t.contains(' ') {
+            return Vec::new();
+        }
+        let typed = &t[1..];
+        SLASH_COMMANDS.iter().copied().filter(|c| c.starts_with(typed)).collect()
+    }
+
     /// Take the current text and clear the buffer (on submit). Records the
     /// text into history (skipping empties and exact-duplicate of last entry).
     pub fn take(&mut self) -> String {
@@ -145,6 +203,24 @@ impl Composer {
             }
         }
     }
+}
+
+/// Longest common prefix of a set of strings (for Tab completion).
+fn longest_common_prefix(items: &[&str]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let first = items[0];
+    let mut end = first.len();
+    for s in &items[1..] {
+        let common = first
+            .char_indices()
+            .zip(s.chars())
+            .take_while(|((_, a), b)| a == b)
+            .count();
+        end = end.min(common);
+    }
+    first[..end].to_string()
 }
 
 #[cfg(test)]
@@ -274,5 +350,63 @@ mod tests {
         // now ↑ starts fresh from newest again (draft detached)
         c.history_prev();
         assert_eq!(c.text(), "past");
+    }
+
+    #[test]
+    fn tab_completes_unique_prefix() {
+        let mut c = Composer::new();
+        c.insert_str("/mod");
+        assert!(c.complete_slash());
+        assert_eq!(c.text(), "/model "); // unique → full + space
+    }
+
+    #[test]
+    fn tab_extends_to_common_prefix_when_ambiguous() {
+        let mut c = Composer::new();
+        c.insert_str("/pl"); // matches "plan" and "plan-mode"
+        assert!(c.complete_slash());
+        assert_eq!(c.text(), "/plan"); // common prefix
+        // candidates still lists both
+        let cands = c.slash_candidates();
+        assert!(cands.contains(&"plan") && cands.contains(&"plan-mode"));
+    }
+
+    #[test]
+    fn tab_noop_when_not_slash() {
+        let mut c = Composer::new();
+        c.insert_str("hello");
+        assert!(!c.complete_slash());
+        assert_eq!(c.text(), "hello");
+    }
+
+    #[test]
+    fn tab_noop_on_unknown_command() {
+        let mut c = Composer::new();
+        c.insert_str("/zzz");
+        assert!(!c.complete_slash());
+    }
+
+    #[test]
+    fn newline_makes_multiline() {
+        let mut c = Composer::new();
+        c.insert_str("line1");
+        c.newline();
+        c.insert_str("line2");
+        assert_eq!(c.text(), "line1\nline2");
+        assert_eq!(c.line_count(), 2);
+    }
+
+    #[test]
+    fn slash_candidates_empty_after_space() {
+        let mut c = Composer::new();
+        c.insert_str("/model gpt");
+        assert!(c.slash_candidates().is_empty()); // has a space → arg, not completing
+    }
+
+    #[test]
+    fn lcp_helper() {
+        assert_eq!(longest_common_prefix(&["plan", "plan-mode"]), "plan");
+        assert_eq!(longest_common_prefix(&["abc", "xyz"]), "");
+        assert_eq!(longest_common_prefix(&["only"]), "only");
     }
 }
