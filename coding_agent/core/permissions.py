@@ -76,6 +76,69 @@ def _path_matches(path: str, pattern: str) -> bool:
 
 
 @dataclass
+class CommandPolicy:
+    """
+    命令白名单策略（参考 Codex 的 execpolicy）。
+
+    与黑名单相反：黑名单默认放行、枚举危险的（永远漏）；白名单默认拒绝、
+    只声明安全的。每条 program 规则声明：程序名 + 允许的参数前缀模式 → 决定。
+
+    rules 形如：
+      [{"program": "git", "args_prefix": ["status"], "decision": "allow"},
+       {"program": "git", "args_prefix": ["push"], "decision": "ask"},
+       {"program": "ls", "decision": "allow"},              # 任意参数都放行
+       {"program": "rm", "decision": "deny"}]
+
+    匹配：取命令第一个 token 作为 program；args_prefix 为空表示该 program 的
+    任意调用都匹配；否则要求命令参数以 args_prefix 逐段前缀匹配。
+    default 是未命中任何规则时的兜底决定（白名单模式设 "ask" 或 "deny"）。
+    """
+    rules: list[dict[str, Any]] = field(default_factory=list)
+    default: str = "ask"
+
+    def decide_command(self, command: str) -> "Decision":
+        """对一条 shell 命令返回 ALLOW/DENY/ASK。"""
+        tokens = command.split()
+        if not tokens:
+            return _to_decision(self.default)
+        program = tokens[0]
+        # 取 basename，兼容 /usr/bin/git 这类绝对路径
+        import os
+        program_base = os.path.basename(program)
+        cmd_args = tokens[1:]
+
+        best: str | None = None
+        best_len = -1
+        for rule in self.rules:
+            rp = str(rule.get("program", ""))
+            if rp not in (program, program_base):
+                continue
+            prefix = rule.get("args_prefix") or []
+            if not _args_prefix_matches(cmd_args, prefix):
+                continue
+            # 更长（更具体）的 args_prefix 优先
+            if len(prefix) > best_len:
+                best = str(rule.get("decision", "ask"))
+                best_len = len(prefix)
+        if best is not None:
+            return _to_decision(best)
+        return _to_decision(self.default)
+
+
+def _args_prefix_matches(cmd_args: list[str], prefix: list[str]) -> bool:
+    """命令参数是否以 prefix 逐段前缀匹配（prefix 为空恒真）。"""
+    if len(prefix) > len(cmd_args):
+        return False
+    return all(cmd_args[i] == prefix[i] for i in range(len(prefix)))
+
+
+def _to_decision(name: str) -> "Decision":
+    m = {"allow": Decision.ALLOW, "deny": Decision.DENY,
+         "forbidden": Decision.DENY, "ask": Decision.ASK, "prompt": Decision.ASK}
+    return m.get(str(name).lower(), Decision.ASK)
+
+
+@dataclass
 class PermissionPolicy:
     """
     权限策略：deny 规则 + allow 规则 + 默认级别回退。
@@ -94,6 +157,8 @@ class PermissionPolicy:
     # allow_external_writes=True 时放行（仅这层；显式 deny 规则仍生效）。
     workspace_root: str | None = None
     allow_external_writes: bool = False
+    # 命令白名单策略（execpolicy 风格）。None 表示不启用（沿用黑名单默认行为）。
+    command_policy: CommandPolicy | None = None
 
     def _is_external_path(self, path: str) -> bool:
         """判断 path 是否落在 workspace_root 之外（解析符号链接/相对路径后比较）。"""
@@ -148,6 +213,11 @@ class PermissionPolicy:
                 if self._is_external_path(p):
                     return Decision.ASK
 
+        # 2c. 命令白名单策略（execpolicy 风格）：对带 command 的执行类调用，
+        #     用声明式规则决定 allow/deny/ask（默认拒绝式，安全优先）。
+        if self.command_policy is not None and arguments.get("command"):
+            return self.command_policy.decide_command(str(arguments["command"]))
+
         # 3. 显式 allow 规则
         for rule in self.allow_rules:
             if rule.matches(tool_name, arguments):
@@ -191,4 +261,12 @@ class PermissionPolicy:
             policy.workspace_root = data["workspace_root"]
         if "allow_external_writes" in data:
             policy.allow_external_writes = bool(data["allow_external_writes"])
+        # 命令白名单策略：{"command_policy": {"default": "ask",
+        #   "rules": [{"program": "git", "args_prefix": ["status"], "decision": "allow"}]}}
+        cp = data.get("command_policy")
+        if isinstance(cp, dict):
+            policy.command_policy = CommandPolicy(
+                rules=list(cp.get("rules", [])),
+                default=str(cp.get("default", "ask")),
+            )
         return policy

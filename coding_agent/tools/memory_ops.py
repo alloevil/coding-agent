@@ -10,10 +10,19 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from .base import Tool, ToolPermission, ToolExecutionError
 from ..memory.project import ProjectMemoryManager
+
+
+def global_memory_root() -> str:
+    """全局记忆根目录（跨项目共享）。参考 Codex 的作用域分层：
+    global 记忆放在 ~/.config/coding-agent/memory/，project 记忆放在项目的 .agent/。"""
+    home = os.environ.get("CODING_AGENT_HOME")
+    base = Path(home) if home else Path.home() / ".config" / "coding-agent"
+    return str(base / "memory")
 
 
 class MemorySaveTool(Tool):
@@ -68,6 +77,13 @@ class MemorySaveTool(Tool):
                     "type": "string",
                     "description": "Source identifier (e.g., session ID or context)"
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["project", "global"],
+                    "description": "Where to store: 'project' (this repo's .agent/, default) "
+                                   "or 'global' (shared across all projects, e.g. personal "
+                                   "preferences and cross-project conventions)."
+                },
             },
             "required": ["content"],
         }
@@ -80,12 +96,13 @@ class MemorySaveTool(Tool):
         content = kwargs.get("content")
         tags = kwargs.get("tags", [])
         source = kwargs.get("source", "")
+        scope = (kwargs.get("scope") or "project").lower()
 
         if not content:
             raise ToolExecutionError(self.name, "content is required")
 
         try:
-            root = self._get_root()
+            root = global_memory_root() if scope == "global" else self._get_root()
             manager = ProjectMemoryManager(root)
 
             # 自动初始化（如果尚未初始化）
@@ -99,7 +116,7 @@ class MemorySaveTool(Tool):
             )
 
             return (
-                f"Saved to project memory: \"{content[:80]}{'...' if len(content) > 80 else ''}\"\n"
+                f"Saved to {scope} memory: \"{content[:80]}{'...' if len(content) > 80 else ''}\"\n"
                 f"Tags: {tags or '(none)'}\n"
                 f"ID: {entry.id}"
             )
@@ -152,6 +169,12 @@ class MemorySearchTool(Tool):
                     "type": "integer",
                     "description": "Maximum number of results (default: 10)"
                 },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "project", "global"],
+                    "description": "Which memory to search: 'all' (default, project + global), "
+                                   "'project' (this repo only), or 'global' (shared only)."
+                },
             },
             "required": [],
         }
@@ -164,28 +187,37 @@ class MemorySearchTool(Tool):
         query = kwargs.get("query", "")
         tags = kwargs.get("tags", [])
         limit = kwargs.get("limit", 10)
+        scope = (kwargs.get("scope") or "all").lower()
 
         try:
-            root = self._get_root()
-            manager = ProjectMemoryManager(root)
+            # 按作用域收集要搜索的 (label, root)
+            roots: list[tuple[str, str]] = []
+            if scope in ("all", "project"):
+                roots.append(("project", self._get_root()))
+            if scope in ("all", "global"):
+                roots.append(("global", global_memory_root()))
 
-            if not manager.is_initialized:
-                return "No project memory found. The .agent/ directory has not been initialized."
+            found: list[tuple[str, Any]] = []
+            for label, root in roots:
+                manager = ProjectMemoryManager(root)
+                if not manager.is_initialized:
+                    continue
+                for entry in manager.search_knowledge(
+                    query=query,
+                    tags=tags if isinstance(tags, list) else [],
+                    limit=limit,
+                ):
+                    found.append((label, entry))
 
-            results = manager.search_knowledge(
-                query=query,
-                tags=tags if isinstance(tags, list) else [],
-                limit=limit,
-            )
-
-            if not results:
+            if not found:
                 return f"No knowledge found matching query='{query}', tags={tags or 'any'}"
 
-            lines = [f"Found {len(results)} knowledge entries:\n"]
-            for entry in results:
+            found = found[:limit]
+            lines = [f"Found {len(found)} knowledge entries:\n"]
+            for label, entry in found:
                 tag_str = f" [{', '.join(entry.tags)}]" if entry.tags else ""
                 source_str = f" (from: {entry.source})" if entry.source else ""
-                lines.append(f"- {entry.content}{tag_str}{source_str}")
+                lines.append(f"- ({label}) {entry.content}{tag_str}{source_str}")
 
             return "\n".join(lines)
         except Exception as e:
