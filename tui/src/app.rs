@@ -56,14 +56,46 @@ fn state_dir() -> std::path::PathBuf {
     d
 }
 
+/// Cap on the debug log file size before it's rotated (truncated). The log is
+/// append-only trace, so a hard cap is enough — we don't keep N generations.
+const LOG_MAX_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+
 /// Append a debug line to the resolved debug-log path (if enabled).
 /// Lets us trace the real execution path on a user's machine.
+///
+/// Hardening (mirrors Codex's login-log handling):
+///  - the file is created 0o600 (it can contain endpoint URLs / backend stderr),
+///  - if it grows past LOG_MAX_BYTES it's truncated first, so it can't grow
+///    unbounded across many sessions.
 pub(crate) fn dbg_log(msg: &str) {
-    if let Some(path) = debug_log_path() {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{msg}");
+    let Some(path) = debug_log_path() else { return };
+    use std::io::Write;
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600); // only applies on create
+    }
+    let Ok(mut f) = opts.open(&path) else { return };
+
+    // Rotate: if the file is already large, truncate before appending.
+    if let Ok(meta) = f.metadata() {
+        if meta.len() > LOG_MAX_BYTES {
+            if let Ok(t) = std::fs::OpenOptions::new().write(true).truncate(true).open(&path) {
+                let mut t = t;
+                let _ = writeln!(t, "[log truncated at {LOG_MAX_BYTES} bytes]");
+            }
         }
+    }
+    let _ = writeln!(f, "{msg}");
+    // Best-effort tighten perms on an already-existing file (create-mode is a
+    // no-op when the file predates this hardening).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 }
 
@@ -595,6 +627,34 @@ mod tests {
 
     fn ev(json: &str) -> Event {
         Event::from_line(json).unwrap()
+    }
+
+    #[test]
+    fn debug_log_path_interprets_env() {
+        // Save/restore the env var so we don't leak into other tests.
+        let prev = std::env::var("CODING_AGENT_DEBUG").ok();
+
+        std::env::remove_var("CODING_AGENT_DEBUG");
+        assert!(debug_log_path().is_none(), "unset -> disabled");
+
+        std::env::set_var("CODING_AGENT_DEBUG", "0");
+        assert!(debug_log_path().is_none(), "0 -> disabled");
+
+        std::env::set_var("CODING_AGENT_DEBUG", "1");
+        let p = debug_log_path().expect("1 -> default path");
+        assert!(p.ends_with("tui.log"), "1 -> state dir tui.log, got {p:?}");
+
+        std::env::set_var("CODING_AGENT_DEBUG", "/tmp/custom-xyz.log");
+        assert_eq!(
+            debug_log_path().unwrap(),
+            std::path::PathBuf::from("/tmp/custom-xyz.log"),
+            "explicit path preserved"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("CODING_AGENT_DEBUG", v),
+            None => std::env::remove_var("CODING_AGENT_DEBUG"),
+        }
     }
 
     #[test]

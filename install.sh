@@ -173,6 +173,7 @@ case ":$PATH:" in
     ;;
 esac
 echo "   Reconfigure anytime:  coding-agent --setup"
+echo "   Check your setup:     coding-agent doctor"
 if [ -z "$TUI_BIN" ]; then
   echo "   (install Rust — https://rustup.rs — then re-run for the full-screen TUI)"
 fi

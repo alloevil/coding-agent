@@ -665,6 +665,18 @@ def _run_config_cmd(args: list[str]) -> None:
         print(f"❌ {e}"); sys.exit(1)
 
 
+async def _run_doctor_cmd(args: list[str]) -> None:
+    """`coding-agent doctor [--json] [--probe]`：本地配置/端点健康诊断。只读。"""
+    from .core import doctor as D
+    as_json = "--json" in args
+    probe = "--probe" in args
+    config = AgentConfig.resolve()
+    report = await D.run_full(config) if probe else D.run_static(config)
+    print(report.to_json() if as_json else report.render())
+    # 退出码反映最坏级别：FAIL→1，其余→0（便于脚本/CI 判断）。
+    sys.exit(1 if report.worst is D.Level.FAIL else 0)
+
+
 def _warn_if_invalid(config: AgentConfig) -> None:
     """启动时校验配置；有问题就清晰打印（含修复建议），不静默退出。"""
     problems = config.validate()
@@ -684,6 +696,11 @@ async def main(argv: list[str] | None = None) -> None:
     # 放在 argparse 之前拦截，因为它是独立子命令、不进 agent 会话。
     if raw and raw[0] == "config":
         _run_config_cmd(raw[1:])
+        return
+
+    # `coding-agent doctor ...`：本地配置/端点健康诊断，只读，跑完即退出。
+    if raw and raw[0] == "doctor":
+        await _run_doctor_cmd(raw[1:])
         return
 
     opts = _parse_args(raw)
