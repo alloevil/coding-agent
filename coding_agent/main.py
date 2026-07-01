@@ -596,11 +596,19 @@ async def main(argv: list[str] | None = None) -> None:
                 print(f"  {s['id']}  ({s.get('updated_at', '?')}){label}")
         return
 
-    # 检查 API key
+    # 检查 API key —— 没有则跑引导式配置向导（而非直接退出）
     if not config.api_key:
-        print("Error: No API key configured")
-        print("Set OPENAI_API_KEY or LLM_API_KEY environment variable")
-        sys.exit(1)
+        from .core.setup_wizard import run_cli_wizard
+        try:
+            run_cli_wizard()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            sys.exit(1)
+        # 重新解析配置（读入向导刚写的全局 config.json）
+        config = AgentConfig.resolve()
+        if not config.api_key:
+            print("Error: no API key configured after setup.")
+            sys.exit(1)
 
     agent = CodingAgent(config)
 
