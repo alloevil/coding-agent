@@ -419,7 +419,7 @@ fn render_wizard(f: &mut Frame, w: &Wizard) {
     let body: Vec<Line> = match w.step {
         Step::Provider => {
             let mut lines = vec![Line::from("Choose a provider (↑↓, Enter):"), Line::from("")];
-            for (i, (_, label, _)) in PROVIDERS.iter().enumerate() {
+            for (i, (_, label, _, _)) in PROVIDERS.iter().enumerate() {
                 let marker = if i == w.provider_idx { "▶ " } else { "  " };
                 let style = if i == w.provider_idx {
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
@@ -437,6 +437,7 @@ fn render_wizard(f: &mut Frame, w: &Wizard) {
         ],
         Step::Key => vec![
             Line::from("API key (required):"),
+            Line::from(format!("  ({})", PROVIDERS[w.provider_idx].3)),
             Line::from(""),
             Line::from(format!("  {}▌", "•".repeat(w.key.text().chars().count()))),
             Line::from(""),
