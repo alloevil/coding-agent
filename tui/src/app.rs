@@ -25,10 +25,41 @@ use crate::composer::Composer;
 use crate::proto::{Event, Request};
 use crate::setup::{Step, Wizard, PROVIDERS};
 
-/// Append a debug line to the file named by CODING_AGENT_DEBUG (if set).
+/// Resolve the debug-log path from CODING_AGENT_DEBUG.
+///
+/// - unset / "0" / "false"  → disabled (None)
+/// - "1" / "true" / "on"    → default file in the state dir
+///                            ($XDG_STATE_HOME|~/.local/state)/coding-agent/tui.log
+/// - anything else          → treated as an explicit file path
+///
+/// This fixes the old footgun where `CODING_AGENT_DEBUG=1` created a file
+/// literally named `1` in the cwd (the value was used verbatim as a path).
+fn debug_log_path() -> Option<std::path::PathBuf> {
+    let v = std::env::var("CODING_AGENT_DEBUG").ok()?;
+    match v.as_str() {
+        "" | "0" | "false" | "off" => None,
+        "1" | "true" | "on" => Some(state_dir().join("tui.log")),
+        other => Some(std::path::PathBuf::from(other)),
+    }
+}
+
+/// Writable state dir: $XDG_STATE_HOME/coding-agent or ~/.local/state/coding-agent.
+fn state_dir() -> std::path::PathBuf {
+    let root = std::env::var("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::PathBuf::from(home).join(".local").join("state")
+        });
+    let d = root.join("coding-agent");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Append a debug line to the resolved debug-log path (if enabled).
 /// Lets us trace the real execution path on a user's machine.
-fn dbg_log(msg: &str) {
-    if let Ok(path) = std::env::var("CODING_AGENT_DEBUG") {
+pub(crate) fn dbg_log(msg: &str) {
+    if let Some(path) = debug_log_path() {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(f, "{msg}");
@@ -298,6 +329,15 @@ async fn handle_wizard_key(
         Some(w) => w,
         None => return Ok(()),
     };
+    // Bracketed paste (e.g. pasting an API key) — insert into the active text
+    // field. Without this, paste events were silently dropped and the key
+    // "couldn't be pasted" in the wizard.
+    if let CtEvent::Paste(s) = &ct {
+        if let Some(field) = w.active_field() {
+            field.insert_str(s);
+        }
+        return Ok(());
+    }
     if let CtEvent::Key(k) = ct {
         if k.kind == KeyEventKind::Release {
             return Ok(());

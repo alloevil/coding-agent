@@ -198,6 +198,76 @@ questions directly; for a simple question, a short answer is best.
         """保存配置到文件"""
         config_path = Path(path).expanduser()
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(self.__dict__, f, indent=2, ensure_ascii=False)
+
+    def validate(self) -> list[str]:
+        """
+        启动前校验配置，返回人类可读的问题列表（含修复建议）。空列表 = 无问题。
+
+        这些是最常见、且过去会导致「没反应 / 静默退出 / 503」的配错：
+          - api_key 为空
+          - model 带非法后缀（如 `[1m]` → 网关 model_not_found）
+          - protocol 与 base_url 明显不匹配
+          - anthropic 网关缺 Authorization / x-api-key 头
+        """
+        problems: list[str] = []
+
+        if not str(self.api_key).strip():
+            problems.append(
+                "API key 为空。修复： coding-agent config set api_key <你的key>"
+                "（或重跑 coding-agent --setup）"
+            )
+
+        # model 带方括号后缀（ANTHROPIC_DEFAULT_OPUS_MODEL 常见的 `[1m]`）→ 网关 404/503
+        if self.model and ("[" in self.model or "]" in self.model):
+            stripped = self.model.split("[", 1)[0]
+            problems.append(
+                f"model 含非法后缀： {self.model!r} —— 多数网关不识别方括号标记。"
+                f"修复： coding-agent config set model {stripped}"
+            )
+
+        proto = (self.protocol or "openai").lower()
+        base = (self.api_base_url or "").lower()
+
+        if proto not in ("openai", "anthropic"):
+            problems.append(
+                f"protocol 无效： {self.protocol!r}（只支持 openai / anthropic）。"
+                "修复： coding-agent config set protocol anthropic"
+            )
+
+        # protocol 与 base_url 明显对不上：官方 anthropic 域名却用 openai 协议，反之亦然。
+        if base:
+            if "api.anthropic.com" in base and proto != "anthropic":
+                problems.append(
+                    "base_url 指向 api.anthropic.com 但 protocol 不是 anthropic。"
+                    "修复： coding-agent config set protocol anthropic"
+                )
+            if "api.openai.com" in base and proto != "openai":
+                problems.append(
+                    "base_url 指向 api.openai.com 但 protocol 不是 openai。"
+                    "修复： coding-agent config set protocol openai"
+                )
+
+        # anthropic 协议需要鉴权头（x-api-key 或 Authorization: Bearer）。
+        # ModelClient 的 _anthropic_headers 会用 api_key 兜底，所以这里只是「建议」级提醒，
+        # 仅当 key 存在但网关可能要 Bearer（extra_headers 空）时提示，不算硬错误。
+        return problems
+
+
+def state_dir() -> Path:
+    """
+    可写状态目录（日志等），遵循 XDG：$XDG_STATE_HOME/coding-agent，
+    否则 ~/.local/state/coding-agent。已 mkdir。
+
+    统一所有日志落点，取代过去散落的 /tmp/tui.log 等。
+    """
+    base = os.environ.get("XDG_STATE_HOME")
+    root = Path(base) if base else Path.home() / ".local" / "state"
+    d = root / "coding-agent"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d

@@ -426,21 +426,47 @@ class CodingAgent:
                     print("Setup cancelled.")
                     return "continue"
                 # 重新解析并热更模型客户端
-                new_cfg = AgentConfig.resolve()
-                self.config.api_key = new_cfg.api_key
-                self.config.model = new_cfg.model
-                self.config.api_base_url = new_cfg.api_base_url
-                self.config.protocol = getattr(new_cfg, "protocol", "openai")
-                self.model_client.api_key = new_cfg.api_key
-                self.model_client.model = new_cfg.model
-                self.model_client.base_url = new_cfg.api_base_url.rstrip("/")
-                self.model_client.protocol = getattr(new_cfg, "protocol", "openai")
-                self.model_client.extra_headers = getattr(new_cfg, "extra_headers", {}) or {}
-                print(f"🧩 Reconfigured. Model: {new_cfg.model}")
+                self._reload_config()
+                print(f"🧩 Reconfigured. Model: {self.config.model}")
+                return "continue"
+            if act.startswith("config:"):
+                # /config           → 查看当前配置（打码）
+                # /config set k v    → 改单项并热更
+                from .core import setup_wizard as W
+                spec = act.split(":", 1)[1].strip()
+                if not spec:
+                    import json as _json
+                    print(_json.dumps(W.redact(W.read_config()), indent=2, ensure_ascii=False)
+                          or "(no config)")
+                    return "continue"
+                parts = spec.split(maxsplit=2)
+                if parts[0] == "set" and len(parts) >= 3:
+                    try:
+                        W.set_config_value(parts[1], parts[2])
+                        self._reload_config()
+                        print(f"🧩 set {parts[1]} → {getattr(self.config, parts[1], '?')}")
+                    except ValueError as e:
+                        print(f"❌ {e}")
+                else:
+                    print("Usage: /config  |  /config set <key> <value>")
                 return "continue"
             return "continue"
         # "prompt" -> 让调用方把 payload 作为用户消息运行
         return "run"
+
+    def _reload_config(self) -> None:
+        """重新解析全局配置并热更 model_client（/setup、/config set 后调用）。"""
+        new_cfg = AgentConfig.resolve()
+        self.config.api_key = new_cfg.api_key
+        self.config.model = new_cfg.model
+        self.config.api_base_url = new_cfg.api_base_url
+        self.config.protocol = getattr(new_cfg, "protocol", "openai")
+        self.config.extra_headers = getattr(new_cfg, "extra_headers", {}) or {}
+        self.model_client.api_key = new_cfg.api_key
+        self.model_client.model = new_cfg.model
+        self.model_client.base_url = new_cfg.api_base_url.rstrip("/")
+        self.model_client.protocol = getattr(new_cfg, "protocol", "openai")
+        self.model_client.extra_headers = getattr(new_cfg, "extra_headers", {}) or {}
 
     def _switch_agent(self, name: str) -> None:
         """切换当前主会话的活动 agent profile：应用其 prompt/model/工具过滤。"""
@@ -597,10 +623,70 @@ def _parse_args(argv: list[str]) -> dict[str, Any]:
             "tui": args.tui, "setup": args.setup}
 
 
+_CONFIG_USAGE = """Usage:
+  coding-agent config show              查看当前配置（敏感值打码）
+  coding-agent config get <key>         读取某项
+  coding-agent config set <key> <val>   修改某项（合并写入，不重跑向导）
+  coding-agent config path              打印 config.json 路径
+
+editable keys: api_key, model, api_base_url, protocol, auto_approve,
+               max_tokens, temperature"""
+
+
+def _run_config_cmd(args: list[str]) -> None:
+    """`coding-agent config ...` 子命令实现。改单项配置，不必重跑整个向导。"""
+    from .core import setup_wizard as W
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(_CONFIG_USAGE)
+        return
+    sub = args[0]
+    try:
+        if sub == "path":
+            print(W.global_config_path())
+        elif sub == "show":
+            data = W.redact(W.read_config())
+            if not data:
+                print("(no config yet — run `coding-agent --setup`)")
+            else:
+                import json as _json
+                print(_json.dumps(data, indent=2, ensure_ascii=False))
+        elif sub == "get":
+            if len(args) < 2:
+                print("Usage: coding-agent config get <key>"); sys.exit(2)
+            print(W.read_config().get(args[1], ""))
+        elif sub == "set":
+            if len(args) < 3:
+                print("Usage: coding-agent config set <key> <value>"); sys.exit(2)
+            path = W.set_config_value(args[1], " ".join(args[2:]))
+            print(f"✅ set {args[1]} → saved to {path}")
+        else:
+            print(f"Unknown config subcommand: {sub}\n\n{_CONFIG_USAGE}"); sys.exit(2)
+    except ValueError as e:
+        print(f"❌ {e}"); sys.exit(1)
+
+
+def _warn_if_invalid(config: AgentConfig) -> None:
+    """启动时校验配置；有问题就清晰打印（含修复建议），不静默退出。"""
+    problems = config.validate()
+    if problems:
+        print("⚠️  配置有问题：")
+        for p in problems:
+            print(f"   • {p}")
+        print()
+
+
 async def main(argv: list[str] | None = None) -> None:
     """主函数"""
     import sys as _sys
-    opts = _parse_args(argv if argv is not None else _sys.argv[1:])
+    raw = argv if argv is not None else _sys.argv[1:]
+
+    # `coding-agent config ...` 子命令：查看 / 改单项配置，改完即退出。
+    # 放在 argparse 之前拦截，因为它是独立子命令、不进 agent 会话。
+    if raw and raw[0] == "config":
+        _run_config_cmd(raw[1:])
+        return
+
+    opts = _parse_args(raw)
 
     config = AgentConfig.resolve()
 
@@ -642,6 +728,9 @@ async def main(argv: list[str] | None = None) -> None:
         if not config.api_key:
             print("Error: no API key configured after setup.")
             sys.exit(1)
+
+    # 启动前校验：配错了明确提示（protocol/base_url/model/key），不静默失败。
+    _warn_if_invalid(config)
 
     agent = CodingAgent(config)
 
