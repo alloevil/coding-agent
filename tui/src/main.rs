@@ -1,10 +1,12 @@
-//! coding-agent-tui — Phase 1 skeleton.
+//! coding-agent-tui — full-screen Ratatui front-end.
 //!
-//! No UI yet: spawns the Python protocol backend, sends `init` + one
-//! `user_input`, and prints streamed events until `done`. This proves the
-//! stdin/stdout pipe end-to-end. Full-screen Ratatui UI lands in Phase 2.
+//! Spawns the Python protocol backend and drives it over stdin/stdout JSON,
+//! rendering a full-screen TUI: scrollable transcript + bottom input box +
+//! live streaming. See PROTOCOL.md for the wire format.
 
+mod app;
 mod backend;
+mod composer;
 mod proto;
 
 use std::env;
@@ -47,10 +49,9 @@ async fn main() -> std::io::Result<()> {
 
     let python = env_or("CODING_AGENT_PYTHON", ".venv/bin/python");
     let cwd = env_or("CODING_AGENT_DIR", ".");
+    let model_hint = model.clone().unwrap_or_default();
 
     let mut backend = Backend::spawn(&python, &cwd)?;
-
-    // Init line first.
     backend
         .send(&Request::Init {
             api_key,
@@ -62,40 +63,6 @@ async fn main() -> std::io::Result<()> {
         })
         .await?;
 
-    // Phase-1 smoke: a hardcoded task (overridable via arg).
-    let task = env::args().nth(1).unwrap_or_else(|| "Say hello in one word.".to_string());
-
-    // Drain events until we see `ready`, then submit the task.
-    let mut sent = false;
-    while let Some(ev) = backend.events.recv().await {
-        match ev.kind.as_str() {
-            "ready" => {
-                eprintln!("[backend ready] model={}", ev.str_field("model").unwrap_or("?"));
-                backend
-                    .send(&Request::UserInput { content: task.clone(), session_id: None })
-                    .await?;
-                sent = true;
-            }
-            "stream_text" => {
-                if let Some(t) = ev.str_field("text") {
-                    print!("{t}");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                }
-            }
-            "tool_call" => eprintln!("\n[tool_call] {}", ev.str_field("name").unwrap_or("?")),
-            "tool_result" => eprintln!("[tool_result]"),
-            "error" => eprintln!("\n[error] {}", ev.str_field("error").unwrap_or("?")),
-            "session_state" | "done" => {
-                if sent {
-                    println!("\n[done]");
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    backend.shutdown().await;
-    Ok(())
+    app::run(backend, model_hint).await
 }
+
