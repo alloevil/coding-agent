@@ -305,11 +305,16 @@ class AgentLoop:
         # 1. 添加用户输入
         if user_input:
             state.add_user_message(user_input)
-        
+
+        # 让 config.max_turns 生效：state 是防失控循环的真源（should_stop 看它），
+        # 但用户是在 AgentConfig 里配的 max_turns —— 不同步的话配置形同虚设。
+        if getattr(self.config, "max_turns", None):
+            state.max_turns = self.config.max_turns
+
         # 重置中断状态
         self._interrupted = False
         self._interrupt_event.clear()
-        
+
         # 2. 主循环
         while not state.should_stop():
             # token 预算停止：超出则结束本轮，避免成本失控
