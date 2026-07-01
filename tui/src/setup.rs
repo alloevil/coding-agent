@@ -8,11 +8,26 @@ use crate::composer::Composer;
 use crate::proto::SaveAnswers;
 
 /// Provider presets (mirror coding_agent/core/setup_wizard.PROVIDERS).
-pub const PROVIDERS: &[(&str, &str, &str)] = &[
-    // (id, label, default_model)
-    ("openai", "OpenAI (api.openai.com)", "gpt-4o"),
-    ("anthropic", "Anthropic / Claude (Messages API)", "claude-opus-4-8"),
-    ("custom", "Custom OpenAI-compatible gateway", ""),
+pub const PROVIDERS: &[(&str, &str, &str, &str)] = &[
+    // (id, label, default_model, key_help)
+    (
+        "openai",
+        "OpenAI (api.openai.com)",
+        "gpt-4o",
+        "Get a key at https://platform.openai.com/api-keys",
+    ),
+    (
+        "anthropic",
+        "Anthropic / Claude (Messages API)",
+        "claude-opus-4-8",
+        "Get a key at https://console.anthropic.com/settings/keys",
+    ),
+    (
+        "custom",
+        "Custom OpenAI-compatible gateway",
+        "",
+        "Use the API key / token your gateway issued",
+    ),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

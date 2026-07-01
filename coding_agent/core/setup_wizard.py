@@ -27,6 +27,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "default_model": "gpt-4o",
         "bearer_header": False,
         "omit_temperature": False,
+        "key_help": "Get a key at https://platform.openai.com/api-keys",
     },
     "anthropic": {
         "label": "Anthropic / Claude (Messages API)",
@@ -35,6 +36,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "default_model": "claude-opus-4-8",
         "bearer_header": True,     # 部分网关要求 Authorization: Bearer
         "omit_temperature": True,  # 较新 Claude 模型弃用 temperature
+        "key_help": "Get a key at https://console.anthropic.com/settings/keys",
     },
     "custom": {
         "label": "Custom OpenAI-compatible gateway",
@@ -43,6 +45,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "default_model": "",
         "bearer_header": False,
         "omit_temperature": False,
+        "key_help": "Use the API key / token your gateway issued",
     },
 }
 
@@ -147,6 +150,8 @@ def run_cli_wizard(input_fn: Callable[[str], str] = input,
         answers["protocol"] = "anthropic" if proto.startswith("a") else "openai"
 
     # 3. API key —— 必填，空则重问（否则会存空 key，每次启动都进向导）
+    if preset.get("key_help"):
+        output_fn(f"  ({preset['key_help']})")
     key = input_fn("API key: ").strip()
     attempts = 0
     while not key and attempts < 5:
