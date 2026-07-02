@@ -42,6 +42,7 @@ impl Composer {
         self.buf.iter().collect()
     }
 
+    #[allow(dead_code)] // used in tests; public accessor kept
     pub fn cursor(&self) -> usize {
         self.cursor
     }
