@@ -43,6 +43,9 @@ class CommandContext:
     cache_hit_rate: float = 0.0
     session_id: str | None = None
     turn_count: int = 0
+    # /cost 美元估算用：当前模型名 + config.pricing 覆盖（可选）
+    model: str = ""
+    pricing: dict | None = None
 
 
 def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
@@ -70,10 +73,15 @@ def _cmd_tools(args: str, ctx: CommandContext) -> CommandResult:
 def _cmd_cost(args: str, ctx: CommandContext) -> CommandResult:
     r = (f", reasoning {ctx.total_reasoning_tokens}"
          if ctx.total_reasoning_tokens else "")
+    # 美元估算：已知模型（或 config.pricing 覆盖）才显示，不瞎猜网关价。
+    from .pricing import estimate_cost
+    est = estimate_cost(ctx.model, ctx.total_prompt_tokens,
+                        ctx.total_completion_tokens, override=ctx.pricing)
+    dollars = f" ≈ ${est:.4f}" if est is not None else ""
     return CommandResult(
         "print",
         f"Tokens: {ctx.total_prompt_tokens} in / {ctx.total_completion_tokens} out{r} "
-        f"(cache hits {ctx.cache_hit_rate*100:.0f}%)",
+        f"(cache hits {ctx.cache_hit_rate*100:.0f}%){dollars}",
     )
 
 

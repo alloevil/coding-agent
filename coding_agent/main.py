@@ -354,6 +354,8 @@ class CodingAgent:
                     cache_hit_rate=mc.cache_hit_rate,
                     session_id=self.state.session_id if self.state else None,
                     turn_count=self.state.turn_count if self.state else 0,
+                    model=self.config.model,
+                    pricing=getattr(self.config, "pricing", None),
                 )
                 result = dispatch(user_input, ctx)
                 handled = await self._handle_command_result(result)

@@ -55,6 +55,9 @@ class AgentConfig:
     auto_format: bool = True
     # 细粒度权限规则：{"allow": [...], "deny": [...], "deny_read_paths": [...]}
     permissions: dict[str, Any] = field(default_factory=dict)
+    # /cost 美元估价覆盖（每 1M token）：{"input": 3.0, "output": 15.0}。
+    # 未设置且模型不在内置价表时，/cost 不显示美元。
+    pricing: dict[str, Any] = field(default_factory=dict)
     # MCP servers：{"name": {"command": [...], "env": {...}, "cwd": "..."}}
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     # 生命周期 hook：{"pre_tool_use": [{"command": "..."}], "post_tool_use": [...], ...}
