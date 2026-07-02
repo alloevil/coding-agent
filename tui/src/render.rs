@@ -199,6 +199,15 @@ pub fn spinner_frame(tick: usize) -> &'static str {
     SPINNER[tick % SPINNER.len()]
 }
 
+/// Format a token count compactly for the header: 950 → "950", 12300 → "12.3k".
+pub fn fmt_tokens(n: u64) -> String {
+    if n < 1000 {
+        format!("{n}")
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
+    }
+}
+
 /// Compact elapsed formatting, matching Codex's fmt_elapsed_compact:
 /// `<60s → "Ns"`, `<1h → "MmSs"`, else `"HhMm"`.
 pub fn fmt_elapsed_compact(secs: u64) -> String {
@@ -359,6 +368,14 @@ mod tests {
         assert_eq!(fmt_elapsed_compact(59), "59s");
         assert_eq!(fmt_elapsed_compact(75), "1m15s");
         assert_eq!(fmt_elapsed_compact(3661), "1h01m");
+    }
+
+    #[test]
+    fn tokens_compact_formats() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(950), "950");
+        assert_eq!(fmt_tokens(12300), "12.3k");
+        assert_eq!(fmt_tokens(200000), "200.0k");
     }
 
     #[test]

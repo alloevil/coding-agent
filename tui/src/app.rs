@@ -159,6 +159,9 @@ pub struct AppState {
     /// Tick value captured when the current turn started, for elapsed display.
     /// The loop ticks ~10/sec while busy, so (tick - busy_start_tick)/10 ≈ secs.
     pub busy_start_tick: usize,
+    /// Context usage for the header: prompt+completion tokens and the max window.
+    pub used_tokens: u64,
+    pub max_context: u64,
 }
 
 impl AppState {
@@ -185,6 +188,18 @@ impl AppState {
                 self.status_str = Status::Idle.label().into();
                 self.needs_setup = ev.rest.get("needs_setup")
                     .and_then(|v| v.as_bool()).unwrap_or(false);
+                self.max_context = ev.rest.get("max_context_tokens")
+                    .and_then(|v| v.as_u64()).unwrap_or(0);
+            }
+            "model_changed" => {
+                if let Some(m) = ev.str_field("model") {
+                    self.model = m.to_string();
+                }
+            }
+            "command_result" => {
+                if let Some(t) = ev.str_field("text") {
+                    self.transcript.push(Entry::Notice(t.to_string()));
+                }
             }
             "config_saved" => {
                 self.needs_setup = false;
@@ -265,6 +280,13 @@ impl AppState {
                     self.transcript.push(Entry::Agent(t));
                 }
                 self.live_reasoning.clear();
+                // Update context usage for the header.
+                let p = ev.rest.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let c = ev.rest.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                if p + c > 0 { self.used_tokens = p + c; }
+                if let Some(m) = ev.rest.get("max_context_tokens").and_then(|v| v.as_u64()) {
+                    if m > 0 { self.max_context = m; }
+                }
                 self.status_str = Status::Idle.label().into();
                 return true;
             }
@@ -706,8 +728,18 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         ])
         .split(f.area());
 
-    // Header
-    let header = format!(" coding-agent  ·  {}  ·  turn {}", state.model, state.turn);
+    // Header: name · model · context usage · turn
+    let model = if state.model.is_empty() { "(no model)" } else { &state.model };
+    let ctx = if state.max_context > 0 {
+        format!("  ·  {}/{} ctx",
+            crate::render::fmt_tokens(state.used_tokens),
+            crate::render::fmt_tokens(state.max_context))
+    } else if state.used_tokens > 0 {
+        format!("  ·  {} ctx", crate::render::fmt_tokens(state.used_tokens))
+    } else {
+        String::new()
+    };
+    let header = format!(" coding-agent  ·  {model}{ctx}  ·  turn {}", state.turn);
     f.render_widget(
         Paragraph::new(header).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         chunks[0],
@@ -927,6 +959,35 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"ready\",\"model\":\"claude-opus-4-8\"}"));
         assert_eq!(s.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn ready_captures_max_context() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"ready\",\"model\":\"m\",\"max_context_tokens\":200000}"));
+        assert_eq!(s.max_context, 200000);
+    }
+
+    #[test]
+    fn model_changed_updates_header_model() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"model_changed\",\"model\":\"gpt-4o\"}"));
+        assert_eq!(s.model, "gpt-4o");
+    }
+
+    #[test]
+    fn command_result_shows_as_notice() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"command_result\",\"text\":\"Current model: claude\"}"));
+        assert!(rendered(&s).iter().any(|l| l.contains("Current model: claude")));
+    }
+
+    #[test]
+    fn session_state_updates_context_usage() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"session_state\",\"prompt_tokens\":1000,\"completion_tokens\":500,\"max_context_tokens\":200000}"));
+        assert_eq!(s.used_tokens, 1500);
+        assert_eq!(s.max_context, 200000);
     }
 
     #[test]

@@ -166,9 +166,15 @@ class AgentProtocol:
             # 把计划工具绑定到当前会话状态
             self.plan_tool.bind_state(self.state)
 
-            # 作为独立任务运行 turn，使 handle_request 立即返回、
-            # dispatcher 能继续读取后续请求（如运行期间的 interrupt）。
-            self._turn_task = asyncio.ensure_future(self._run_turn(content))
+            # Slash 命令（/model /config /help /tools /status ...）：在后端拦截并
+            # 分发，而不是喂给 LLM。结果作为 command_result 事件发回 TUI。
+            from .core.commands import is_command
+            if is_command(content):
+                await self._handle_slash_command(content)
+            else:
+                # 作为独立任务运行 turn，使 handle_request 立即返回、
+                # dispatcher 能继续读取后续请求（如运行期间的 interrupt）。
+                self._turn_task = asyncio.ensure_future(self._run_turn(content))
 
         elif req_type == "permission_response":
             self._permission_result = request.get("approved", False)
@@ -235,11 +241,73 @@ class AgentProtocol:
             self._send_event("error", {"error": str(e)})
         finally:
             if self.state is not None:
-                self._send_event("session_state", {
+                mc = getattr(self, "model_client", None)
+                ev: dict[str, Any] = {
                     "session_id": self.state.session_id,
                     "turn_count": self.state.turn_count,
-                })
+                }
+                if mc is not None:
+                    ev["prompt_tokens"] = mc.total_prompt_tokens
+                    ev["completion_tokens"] = mc.total_completion_tokens
+                    ev["max_context_tokens"] = getattr(self.config, "max_context_tokens", 0)
+                self._send_event("session_state", ev)
             self._turn_task = None
+
+    async def _handle_slash_command(self, text: str) -> None:
+        """分发 slash 命令并把结果作为事件发回 TUI（不喂给 LLM）。"""
+        from .core.commands import dispatch, CommandContext
+        mc = self.model_client
+        ctx = CommandContext(
+            tool_names=[t.name for t in self.tool_registry.get_all_tools()],
+            total_prompt_tokens=mc.total_prompt_tokens,
+            total_completion_tokens=mc.total_completion_tokens,
+            total_reasoning_tokens=mc.total_reasoning_tokens,
+            cache_hit_rate=mc.cache_hit_rate,
+            session_id=self.state.session_id if self.state else None,
+            turn_count=self.state.turn_count if self.state else 0,
+        )
+        try:
+            result = dispatch(text, ctx)
+        except Exception as e:  # noqa: BLE001
+            self._send_event("command_result", {"text": f"command error: {e}"})
+            return
+
+        if result.kind == "print":
+            self._send_event("command_result", {"text": result.payload})
+        elif result.kind == "prompt":
+            # 命令展开成一段提示（如自定义命令）→ 作为一次 turn 运行。
+            self._turn_task = asyncio.ensure_future(self._run_turn(result.payload))
+        elif result.kind == "action":
+            await self._handle_command_action(result.payload)
+
+    async def _handle_command_action(self, action: str) -> None:
+        """处理命令 action（/model 切换、/new、/compact 等），发事件反馈 TUI。"""
+        if action.startswith("model:"):
+            spec = action.split(":", 1)[1].strip()
+            if not spec:
+                self._send_event("command_result", {
+                    "text": f"Current model: {self.config.model} "
+                            f"({getattr(self.config, 'protocol', 'openai')})"})
+                return
+            # /model <model> 或 /model <provider>:<model>：热更当前客户端。
+            self.config.model = spec
+            self.model_client.model = spec
+            self._send_event("command_result", {"text": f"🔀 Model → {spec}"})
+            # 更新 header 上的模型名
+            self._send_event("model_changed", {"model": spec})
+        elif action == "new":
+            self.state = AgentState(session_id=self.session_store.create_session())
+            self.plan_tool.bind_state(self.state)
+            self._send_event("command_result", {"text": "✨ Started a new session"})
+        elif action == "compact":
+            if self.state is not None:
+                await self.agent_loop.context_manager.compact(self.state, self._call_model)
+                self._send_event("command_result", {"text": "🗜️  Context compacted"})
+            else:
+                self._send_event("command_result", {"text": "Nothing to compact yet"})
+        else:
+            # 其它 action（status/plan-mode/agents...）：给一个可读回执。
+            self._send_event("command_result", {"text": f"({action})"})
 
     def _forward_event(self, event: AgentEventData) -> None:
         """转发 agent 事件到 stdout"""
@@ -275,6 +343,7 @@ class AgentProtocol:
             "tools": len(self.tool_registry.get_all_tools()),
             "auto_approve": self.config.auto_approve,
             "needs_setup": not self.config.api_key,
+            "max_context_tokens": getattr(self.config, "max_context_tokens", 0),
         })
 
         loop = asyncio.get_event_loop()
