@@ -170,3 +170,15 @@ def test_slash_quit_emits_quit_event(monkeypatch):
         await proto.handle_request({"type": "user_input", "content": "/quit"})
         assert "quit" in [t for t, _ in proto._events]
     asyncio.run(main())
+
+
+def test_slash_resume_lists_sessions(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.session_store = type("SS", (), {
+            "list_sessions": lambda self: [{"id": "s1"}],
+        })()
+        await proto.handle_request({"type": "user_input", "content": "/resume"})
+        ev = next(d for t, d in proto._events if t == "sessions_list")
+        assert ev["sessions"] == [{"id": "s1"}]
+    asyncio.run(main())
