@@ -316,9 +316,14 @@ impl Composer {
     /// Move to the start of the next word (vim `w`): skip the current run of
     /// non-space, then any spaces.
     fn word_forward(&mut self) {
+        self.cursor = self.next_word_start();
+    }
+
+    /// Index of the start of the next word from the cursor (vim `w` target).
+    fn next_word_start(&self) -> usize {
         let n = self.buf.len();
         let mut i = self.cursor;
-        if i >= n { return; }
+        if i >= n { return n; }
         let start_space = self.buf[i].is_whitespace();
         // advance over the current class
         while i < n && self.buf[i].is_whitespace() == start_space {
@@ -330,7 +335,25 @@ impl Composer {
                 i += 1;
             }
         }
-        self.cursor = i.min(n);
+        i.min(n)
+    }
+
+    /// Index just past the end of the current/next word (vim `e` target, made
+    /// exclusive so a delete `de` removes through that last char).
+    fn word_end_excl(&self) -> usize {
+        let n = self.buf.len();
+        let mut i = self.cursor;
+        if i >= n { return n; }
+        // step forward at least one, skip any spaces to reach a word
+        i += 1;
+        while i < n && self.buf[i].is_whitespace() {
+            i += 1;
+        }
+        // consume to the end of this word
+        while i < n && !self.buf[i].is_whitespace() {
+            i += 1;
+        }
+        i.min(n)
     }
 
     /// Move to the start of the previous word (vim `b`).
@@ -348,6 +371,14 @@ impl Composer {
         self.cursor = i;
     }
 
+    /// Delete chars in [cursor, to) (to is exclusive, clamped). Used by operators.
+    fn delete_to(&mut self, to: usize) {
+        let to = to.min(self.buf.len());
+        if to > self.cursor {
+            self.buf.drain(self.cursor..to);
+        }
+    }
+
     /// Handle a single character key while vim mode is enabled. Returns a
     /// `VimOutcome` telling the caller how to proceed. In Insert mode everything
     /// except `Esc` (handled by the caller via `vim_escape`) is Passthrough.
@@ -357,10 +388,22 @@ impl Composer {
         }
         // Normal mode. Resolve a pending operator first.
         if let Some(op) = self.vim_pending.take() {
-            if op == 'd' && c == 'd' {
-                // dd: delete the whole line.
+            // dd / cc: whole-line operators.
+            if (op == 'd' && c == 'd') || (op == 'c' && c == 'c') {
                 self.buf.clear();
                 self.cursor = 0;
+                if op == 'c' { self.vim_to_insert(); }
+                return VimOutcome::Consumed;
+            }
+            // d/c + word motion (w → next-word-start, e → word-end).
+            let target = match c {
+                'w' => Some(self.next_word_start()),
+                'e' => Some(self.word_end_excl()),
+                _ => None,
+            };
+            if let Some(to) = target {
+                self.delete_to(to);
+                if op == 'c' { self.vim_to_insert(); }
                 return VimOutcome::Consumed;
             }
             // Any other second key cancels the operator; fall through to treat
@@ -378,9 +421,16 @@ impl Composer {
             '$' => self.end(),
             'w' => self.word_forward(),
             'b' => self.word_back(),
+            'e' => {
+                // `e` motion lands ON the last char of the word (exclusive-1).
+                let end = self.word_end_excl();
+                self.cursor = end.saturating_sub(1).max(self.cursor.min(end));
+            }
             'x' => self.delete(),
             'D' => { self.buf.truncate(self.cursor); }
+            'C' => { self.buf.truncate(self.cursor); self.vim_to_insert(); }
             'd' => { self.vim_pending = Some('d'); }
+            'c' => { self.vim_pending = Some('c'); }
             // j/k browse history, matching the arrow keys — handy in Normal mode.
             'k' => self.history_prev(),
             'j' => self.history_next(),
@@ -772,5 +822,73 @@ mod tests {
         c.vim_key('l');  // not 'd' → cancels; treated as motion right
         assert_eq!(c.text(), "abcd"); // nothing deleted
         assert_eq!(c.cursor(), 1);
+    }
+
+    #[test]
+    fn vim_dw_deletes_word_and_trailing_space() {
+        let mut c = Composer::new();
+        c.insert_str("foo bar baz");
+        c.toggle_vim();
+        c.vim_key('0');
+        c.vim_key('d');
+        c.vim_key('w'); // delete "foo " → "bar baz"
+        assert_eq!(c.text(), "bar baz");
+        assert_eq!(c.cursor(), 0);
+    }
+
+    #[test]
+    fn vim_de_deletes_to_word_end() {
+        let mut c = Composer::new();
+        c.insert_str("foo bar");
+        c.toggle_vim();
+        c.vim_key('0');
+        c.vim_key('d');
+        c.vim_key('e'); // delete "foo" (keeps the space) → " bar"
+        assert_eq!(c.text(), " bar");
+    }
+
+    #[test]
+    fn vim_cw_deletes_word_and_enters_insert() {
+        let mut c = Composer::new();
+        c.insert_str("foo bar");
+        c.toggle_vim();
+        c.vim_key('0');
+        c.vim_key('c');
+        c.vim_key('w'); // change word: delete "foo " and enter Insert
+        assert_eq!(c.text(), "bar");
+        assert_eq!(c.vim_mode(), VimMode::Insert);
+    }
+
+    #[test]
+    fn vim_cc_clears_line_into_insert() {
+        let mut c = Composer::new();
+        c.insert_str("throwaway");
+        c.toggle_vim();
+        c.vim_key('c');
+        c.vim_key('c');
+        assert_eq!(c.text(), "");
+        assert_eq!(c.vim_mode(), VimMode::Insert);
+    }
+
+    #[test]
+    fn vim_capital_c_kills_to_end_into_insert() {
+        let mut c = Composer::new();
+        c.insert_str("keep DROP");
+        c.toggle_vim();
+        c.vim_key('0');
+        for _ in 0..5 { c.vim_key('l'); }
+        c.vim_key('C'); // kill to EOL and insert
+        assert_eq!(c.text(), "keep ");
+        assert_eq!(c.vim_mode(), VimMode::Insert);
+    }
+
+    #[test]
+    fn vim_e_motion_lands_on_word_end() {
+        let mut c = Composer::new();
+        c.insert_str("foo bar");
+        c.toggle_vim();
+        c.vim_key('0');
+        c.vim_key('e'); // land on last char of "foo" → index 2
+        assert_eq!(c.cursor(), 2);
     }
 }

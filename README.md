@@ -144,7 +144,7 @@ In the TUI:
 | `Esc` | interrupt a running turn · clear the draft when idle |
 | `Ctrl+L` | clear the screen (session continues) |
 | `PgUp/PgDn`, mouse wheel | scroll the transcript |
-| `/vim` then `Esc` | opt-in vim modal editing (NORMAL/INSERT chip in the footer) |
+| `/vim` then `Esc` | opt-in vim modal editing — motions `h l 0 $ w b e`, edits `x D C dd cc dw de cw ce`, `i a A I o` to insert (NORMAL/INSERT chip in the footer) |
 
 ### Slash commands
 
