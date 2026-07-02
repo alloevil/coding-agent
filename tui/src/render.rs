@@ -284,6 +284,46 @@ pub fn render_plan_panel(steps: &[PlanStep]) -> Vec<Line<'static>> {
     out
 }
 
+/// Pre-wrap styled lines to `width` columns, preserving span styles across the
+/// split. Needed because slicing the transcript by logical lines while letting
+/// Paragraph re-wrap pushes the newest (tail) content out of view — scrolling
+/// must operate on VISUAL lines. Char-count based (CJK counts as 1; slight
+/// under-wrap for wide glyphs is acceptable vs. the tail-loss bug).
+pub fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let w = width.max(1) as usize;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        // Fast path: fits already.
+        let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        if total <= w {
+            out.push(line);
+            continue;
+        }
+        let mut cur: Vec<Span<'static>> = Vec::new();
+        let mut cur_len = 0usize;
+        for span in line.spans {
+            let style = span.style;
+            let mut chars: Vec<char> = span.content.chars().collect();
+            while !chars.is_empty() {
+                let room = w - cur_len;
+                if room == 0 {
+                    out.push(Line::from(std::mem::take(&mut cur)));
+                    cur_len = 0;
+                    continue;
+                }
+                let take = room.min(chars.len());
+                let piece: String = chars.drain(..take).collect();
+                cur_len += take;
+                cur.push(Span::styled(piece, style));
+            }
+        }
+        if !cur.is_empty() {
+            out.push(Line::from(cur));
+        }
+    }
+    out
+}
+
 /// ASCII wordmark for the welcome screen (our own art — not Codex's frames).
 /// Rendered with an animated shimmer sweep, replicating Codex's animated
 /// welcome banner behavior.
@@ -453,5 +493,38 @@ mod tests {
     #[test]
     fn plan_panel_empty_is_empty() {
         assert!(render_plan_panel(&[]).is_empty());
+    }
+
+    #[test]
+    fn wrap_lines_splits_long_line_preserving_text() {
+        let lines = vec![Line::from("abcdefghij")]; // 10 chars
+        let wrapped = wrap_lines(lines, 4);
+        assert_eq!(wrapped.len(), 3); // 4+4+2
+        let joined: String = wrapped.iter().map(|l| text_of(l)).collect();
+        assert_eq!(joined, "abcdefghij");
+    }
+
+    #[test]
+    fn wrap_lines_short_line_untouched() {
+        let lines = vec![Line::from("hi")];
+        let wrapped = wrap_lines(lines, 80);
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(text_of(&wrapped[0]), "hi");
+    }
+
+    #[test]
+    fn wrap_lines_preserves_span_styles_across_split() {
+        let styled = Line::from(vec![
+            Span::styled("aaaa".to_string(), Style::default().fg(Color::Red)),
+            Span::styled("bbbb".to_string(), Style::default().fg(Color::Green)),
+        ]);
+        let wrapped = wrap_lines(vec![styled], 6); // splits inside "bbbb"
+        assert_eq!(wrapped.len(), 2);
+        // First line: red aaaa + green bb; second: green bb
+        assert_eq!(wrapped[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(wrapped[0].spans[1].style.fg, Some(Color::Green));
+        assert_eq!(wrapped[1].spans[0].style.fg, Some(Color::Green));
+        let joined: String = wrapped.iter().map(|l| text_of(l)).collect();
+        assert_eq!(joined, "aaaabbbb");
     }
 }

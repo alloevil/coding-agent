@@ -1123,9 +1123,12 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         chunks[0],
     );
 
-    // Transcript (honor scroll offset; 0 = follow tail)
+    // Transcript (honor scroll offset; 0 = follow tail). Pre-wrap to visual
+    // lines so slicing/tail-follow counts what's actually on screen — letting
+    // Paragraph re-wrap after slicing pushed the newest lines out of view.
     let inner_w = chunks[1].width.saturating_sub(2); // minus borders
-    let lines = state.render_lines(turn_running, inner_w);
+    let lines = crate::render::wrap_lines(
+        state.render_lines(turn_running, inner_w), inner_w);
     let height = chunks[1].height.saturating_sub(2) as usize; // minus borders
     let start = state.view_start(lines.len(), height);
     let end = (start + height).min(lines.len());
@@ -1137,8 +1140,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     };
     f.render_widget(
         Paragraph::new(visible)
-            .block(Block::default().borders(Borders::ALL).title(conv_title))
-            .wrap(Wrap { trim: false }),
+            .block(Block::default().borders(Borders::ALL).title(conv_title)),
         chunks[1],
     );
 
