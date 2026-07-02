@@ -213,6 +213,68 @@ class ContextManager:
             superseded += 1
         return superseded
 
+    # 写类工具：这些调用会改动文件，使更早对同一文件的 file_read 过期。
+    _WRITE_TOOLS = {"file_write", "file_edit", "apply_patch"}
+    _STALE = "[read of {path} — stale after a later edit]"
+
+    def _paths_written_by(self, tc: "ToolCall") -> list[str]:
+        """一个写类工具调用涉及的文件路径（apply_patch 可能多文件）。"""
+        a = tc.arguments or {}
+        if tc.name == "apply_patch":
+            ops = a.get("ops") or a.get("operations") or []
+            out = []
+            if isinstance(ops, list):
+                for op in ops:
+                    if isinstance(op, dict) and op.get("path"):
+                        out.append(str(op["path"]))
+            return out
+        p = a.get("path") or a.get("file_path")
+        return [str(p)] if p else []
+
+    def invalidate_stale_reads(self, state: AgentState) -> int:
+        """
+        文件被写后，其更早的 file_read 内容已过期——替换占位符，避免模型基于
+        旧内容推理。只失效「写操作发生位置之前」的读取；写之后的读是新鲜的。
+        保护最近窗口、幂等、纯本地。返回失效的读取数。
+        """
+        msgs = state.messages
+        # 收集每个被写文件的「最早一次写」的消息索引
+        first_write_at: dict[str, int] = {}
+        # tool_call_id -> read path
+        read_path: dict[str, str] = {}
+        for i, msg in enumerate(msgs):
+            if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.name in self._WRITE_TOOLS:
+                        for p in self._paths_written_by(tc):
+                            first_write_at.setdefault(p, i)
+                    elif tc.name == "file_read":
+                        p = tc.arguments.get("path") or tc.arguments.get("file_path")
+                        if p:
+                            read_path[tc.id] = str(p)
+        if not first_write_at:
+            return 0
+
+        cutoff = len(msgs) - self.MICROCOMPACT_KEEP_RECENT
+        invalidated = 0
+        for i, msg in enumerate(msgs):
+            if i >= cutoff:
+                break
+            if msg.role != MessageRole.TOOL or not msg.tool_result:
+                continue
+            path = read_path.get(msg.tool_result.tool_call_id)
+            if not path or path not in first_write_at:
+                continue
+            # 这次读取必须发生在「该文件首次被写」之前才算过期
+            if i >= first_write_at[path]:
+                continue
+            c = msg.tool_result.content
+            if c == self._ELIDED or c.startswith("[read of ") or c.startswith("[earlier read of "):
+                continue
+            msg.tool_result.content = self._STALE.format(path=path)
+            invalidated += 1
+        return invalidated
+
     async def compact(self, state: AgentState, model_call_fn: Any) -> None:
         """
         执行 context 压缩，从便宜到贵：
@@ -221,7 +283,8 @@ class ContextManager:
         2. Auto-Compact - 用模型总结较旧的历史，保留最近若干轮原文
         3. Budget Reduction - 兜底硬截断（保持 tool 配对完整）
         """
-        # 第 0 层：microcompact（本地回收旧工具输出 + 同文件重复读去重）
+        # 第 0 层：microcompact（本地回收旧工具输出 + 失效过期读 + 同文件去重）
+        self.invalidate_stale_reads(state)
         self.dedup_file_reads(state)
         self.microcompact(state)
         if state.get_token_estimate() <= self.max_tokens * 0.8:
