@@ -157,3 +157,16 @@ def test_rewind_on_empty_state_is_safe(monkeypatch):
         ev = next(d for t, d in proto._events if t == "rewound")
         assert ev["text"] == ""
     asyncio.run(main())
+
+
+def test_slash_quit_emits_quit_event(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        await proto.handle_request({"type": "user_input", "content": "/exit"})
+        kinds = [t for t, _ in proto._events]
+        assert "quit" in kinds, "/exit must emit a quit event for the TUI to close"
+        # /quit alias too
+        proto._events.clear()
+        await proto.handle_request({"type": "user_input", "content": "/quit"})
+        assert "quit" in [t for t, _ in proto._events]
+    asyncio.run(main())

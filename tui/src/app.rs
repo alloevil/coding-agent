@@ -246,6 +246,11 @@ impl AppState {
                 self.status_str = Status::Idle.label().into();
                 return true;
             }
+            "quit" => {
+                // /quit or /exit — backend asks the TUI to close.
+                self.should_quit = true;
+                return true;
+            }
             "plan" => {
                 // Live plan/todo panel. Steps: [{step, status}].
                 if let Some(arr) = ev.rest.get("steps").and_then(|v| v.as_array()) {
@@ -647,6 +652,28 @@ fn summarize_result_body(body: &str) -> String {
     }
 }
 
+/// Describe a crossterm event for the debug log WITHOUT leaking typed content
+/// (no raw chars/paste text — just the shape, so logs are safe to share).
+fn describe_event(ct: &CtEvent) -> String {
+    use crossterm::event::KeyModifiers as M;
+    match ct {
+        CtEvent::Paste(s) => format!("Paste({} chars)", s.chars().count()),
+        CtEvent::Mouse(_) => "Mouse".into(),
+        CtEvent::Resize(w, h) => format!("Resize({w}x{h})"),
+        CtEvent::Key(k) => {
+            let m = if k.modifiers.contains(M::CONTROL) { "Ctrl+" }
+                    else if k.modifiers.contains(M::SHIFT) { "Shift+" }
+                    else if k.modifiers.contains(M::ALT) { "Alt+" } else { "" };
+            let base = match k.code {
+                KeyCode::Char(_) => "Char".to_string(), // NOT the char itself
+                other => format!("{other:?}"),
+            };
+            format!("Key({m}{base})")
+        }
+        _ => "Other".into(),
+    }
+}
+
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
 pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
                  want_continue: bool, want_resume: bool) -> std::io::Result<()> {
@@ -718,6 +745,7 @@ async fn run_loop(
             term.draw(|f| render(f, state, composer, *turn_running))?;
         }
         if state.should_quit {
+            dbg_log("EXIT: should_quit -> Ok");
             return Ok(());
         }
 
@@ -755,6 +783,9 @@ async fn run_loop(
             // Keyboard event
             maybe_key = keys.next() => {
                 if let Some(Ok(ct)) = maybe_key {
+                    // Log event KIND only (not typed chars — avoids leaking API
+                    // keys/prompts into the log; still shows paste/enter/ctrl).
+                    dbg_log(&format!("key: {}", describe_event(&ct)));
                     if wizard.is_some() {
                         handle_wizard_key(ct, backend, state, wizard).await?;
                     } else {
@@ -980,6 +1011,10 @@ async fn handle_key(
                             state.want_resume = true;
                             backend.send(&Request::ListSessions).await?;
                         } else {
+                            // Log the shape of the submission (is-command + length),
+                            // not the text itself.
+                            dbg_log(&format!("submit: {} chars, command={}",
+                                text.chars().count(), text.starts_with('/')));
                             state.push_user(&text);
                             state.scroll = 0; // follow tail on new input
                             state.busy_start_tick = state.tick; // start elapsed clock
@@ -1456,6 +1491,24 @@ mod tests {
         let ended = s.apply(&ev("{\"type\":\"command_result\",\"text\":\"Current model: claude\"}"));
         assert!(ended, "command_result ends the turn so the spinner stops");
         assert!(rendered(&s).iter().any(|l| l.contains("Current model: claude")));
+    }
+
+    #[test]
+    fn quit_event_sets_should_quit() {
+        let mut s = AppState::new();
+        let ended = s.apply(&ev("{\"type\":\"quit\"}"));
+        assert!(ended);
+        assert!(s.should_quit, "/exit /quit must close the TUI");
+    }
+
+    #[test]
+    fn describe_event_does_not_leak_typed_chars() {
+        use crossterm::event::{KeyEvent, KeyCode as KC, KeyModifiers};
+        let e = CtEvent::Key(KeyEvent::new(KC::Char('s'), KeyModifiers::NONE));
+        let d = describe_event(&e);
+        assert_eq!(d, "Key(Char)"); // the actual 's' is never in the log
+        let p = CtEvent::Paste("secret-api-key".into());
+        assert_eq!(describe_event(&p), "Paste(14 chars)"); // content not logged
     }
 
     #[test]
