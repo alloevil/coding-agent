@@ -254,6 +254,9 @@ class CodingAgent:
         self.plan_tool.bind_state(self.state)
         self.model_client.prompt_cache_key = self.state.session_id
         self.state.metadata["model"] = self.config.model
+        # Headless：不能交互确认（否则阻塞在 input()）。自动放行工具——deny
+        # 规则仍生效。等价于 Claude Code -p 的非交互执行。
+        self.agent_loop.permission_policy.auto_approve = True
         # 流式增量不打 stdout（stdout 只留最终答案）
         self.on_text_delta = lambda _chunk: None
         self.on_reasoning_delta = lambda _chunk: None
