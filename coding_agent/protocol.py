@@ -93,7 +93,27 @@ class AgentProtocol:
         
         # 设置权限确认
         self.agent_loop.set_permission_handler(self._confirm_permission)
-        
+
+        # Skills + 项目记忆按需注入（渐进式披露），与 CLI 前端一致。
+        # 之前 TUI 后端没设这个 provider → skills/记忆都进不了上下文。
+        from .core.skills import discover_skills, render_available_skills
+        from .memory.project import ProjectMemoryManager
+
+        def _extra_system() -> str:
+            blocks: list[str] = []
+            skills = render_available_skills(discover_skills())
+            if skills:
+                blocks.append(skills)
+            try:
+                mem = ProjectMemoryManager(".").get_context_for_agent()
+            except Exception:
+                mem = ""
+            if mem:
+                blocks.append(mem)
+            return "\n\n".join(blocks)
+
+        self.agent_loop.set_extra_system_provider(_extra_system)
+
         # 当前状态
         self.state: AgentState | None = None
         # 当前正在运行的 turn 任务（None 表示空闲）
