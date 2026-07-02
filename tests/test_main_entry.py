@@ -201,3 +201,40 @@ async def test_run_print_outputs_final_reply(isolated_home, capsys, monkeypatch,
     assert "Coding Agent started" not in out
     # headless 必须自动放行，否则会阻塞在交互式权限确认
     assert agent.agent_loop.permission_policy.auto_approve is True
+
+
+async def test_run_print_executes_tool_without_blocking(isolated_home, capsys, monkeypatch, tmp_path):
+    """run_print 的工具执行路径：headless 下模型发起 file_write 工具调用必须
+    自动放行并真正落盘（不阻塞在权限确认）——正是 #51 回归点。
+
+    Mirrors the live-verified end-to-end run (real Claude read→edit a file);
+    this deterministic version guards the tool-executing headless path.
+    """
+    from coding_agent.core.config import AgentConfig
+
+    target = tmp_path / "out.txt"
+    cfg = AgentConfig(api_key="k", model="mock", auto_approve=True,
+                      session_db_path=str(tmp_path / "s.db"))
+    agent = M.CodingAgent(cfg)
+
+    # round 1: call file_write; round 2: finish. State drives which round.
+    calls = {"n": 0}
+
+    async def fake_model(context, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"content": "", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "file_write",
+                             "arguments": json.dumps({"path": str(target),
+                                                      "content": "written by tool"})},
+            }]}
+        return {"content": "DONE", "tool_calls": []}
+
+    agent.agent_loop.set_model_call_fn(fake_model)
+    code = await agent.run_print("write the file")
+    assert code == 0
+    # the tool actually ran (file on disk) and the turn finished
+    assert target.read_text() == "written by tool"
+    assert "DONE" in capsys.readouterr().out
+    assert calls["n"] == 2  # tool round + finish round, no blocking in between
