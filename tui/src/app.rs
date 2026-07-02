@@ -169,6 +169,11 @@ pub struct AppState {
     /// Pending tool-permission request: (tool name, argument summary).
     /// While set, the key handler is modal: y approve / n deny / a always-allow.
     pub pending_permission: Option<(String, String)>,
+    /// Active session id (set when resuming via --continue, or from
+    /// session_state events). Sent with every user turn so the backend loads it.
+    pub session_id: Option<String>,
+    /// --continue: adopt the most recent session once sessions_list arrives.
+    pub want_continue: bool,
 }
 
 impl AppState {
@@ -244,6 +249,28 @@ impl AppState {
                     .unwrap_or_default();
                 self.pending_permission = Some((name, args));
                 self.status_str = "awaiting approval".into();
+            }
+            "sessions_list" => {
+                // --continue: adopt the most recent session (list is sorted by
+                // updated_at DESC). Show a resume notice with its title if any.
+                if self.want_continue {
+                    self.want_continue = false;
+                    if let Some(first) = ev.rest.get("sessions")
+                        .and_then(|v| v.as_array()).and_then(|a| a.first()) {
+                        if let Some(id) = first.get("id").and_then(|v| v.as_str()) {
+                            self.session_id = Some(id.to_string());
+                            let title = first.get("metadata")
+                                .and_then(|m| m.get("title")).and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let short: String = id.chars().take(8).collect();
+                            self.transcript.push(Entry::Notice(if title.is_empty() {
+                                format!("↩ Resumed session {short}…")
+                            } else {
+                                format!("↩ Resumed session {short}… — {title}")
+                            }));
+                        }
+                    }
+                }
             }
             "config_saved" => {
                 self.needs_setup = false;
@@ -324,6 +351,10 @@ impl AppState {
                     self.transcript.push(Entry::Agent(t));
                 }
                 self.live_reasoning.clear();
+                // Track the active session so later turns continue it.
+                if let Some(sid) = ev.str_field("session_id") {
+                    self.session_id = Some(sid.to_string());
+                }
                 // Update context usage for the header.
                 let p = ev.rest.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                 let c = ev.rest.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -458,7 +489,8 @@ fn summarize_result_body(body: &str) -> String {
 }
 
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
-pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) -> std::io::Result<()> {
+pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
+                 want_continue: bool) -> std::io::Result<()> {
     // A full-screen TUI needs a real interactive terminal. When stdout/stdin
     // isn't a TTY (piped, non-interactive shell, some IDE terminals), don't
     // fail with a cryptic raw-mode OS error — exit clearly so the launcher can
@@ -484,6 +516,11 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) ->
     state.model = model_hint;
     // Index workspace files once for @file completion (cheap, bounded).
     state.files = crate::file_index::scan(std::path::Path::new("."));
+    // --continue: ask for recent sessions; sessions_list adopts the latest.
+    if want_continue {
+        state.want_continue = true;
+        backend.send(&Request::ListSessions).await?;
+    }
     let mut composer = Composer::new();
     let mut turn_running = false;
     // --setup forces the wizard open immediately; otherwise it opens when the
@@ -680,7 +717,7 @@ async fn handle_key(
                             state.push_user(&text);
                             state.scroll = 0; // follow tail on new input
                             state.busy_start_tick = state.tick; // start elapsed clock
-                            backend.send(&Request::UserInput { content: text, session_id: None }).await?;
+                            backend.send(&Request::UserInput { content: text, session_id: state.session_id.clone() }).await?;
                             *turn_running = true;
                         }
                     }
@@ -1140,6 +1177,32 @@ mod tests {
             "{{\"type\":\"permission_request\",\"tool_name\":\"t\",\"arguments\":{{\"a\":\"{long}\"}}}}")));
         let (_, args) = s.pending_permission.as_ref().unwrap();
         assert!(args.chars().count() <= 170, "args summary is capped");
+    }
+
+    #[test]
+    fn sessions_list_adopts_latest_when_continuing() {
+        let mut s = AppState::new();
+        s.want_continue = true;
+        s.apply(&ev("{\"type\":\"sessions_list\",\"sessions\":[{\"id\":\"abc12345678\",\"metadata\":{\"title\":\"fix the bug\"}},{\"id\":\"older\"}]}"));
+        assert_eq!(s.session_id.as_deref(), Some("abc12345678"));
+        assert!(!s.want_continue, "one-shot");
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("Resumed session abc12345"));
+        assert!(joined.contains("fix the bug"));
+    }
+
+    #[test]
+    fn sessions_list_ignored_when_not_continuing() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"sessions_list\",\"sessions\":[{\"id\":\"abc\"}]}"));
+        assert!(s.session_id.is_none());
+    }
+
+    #[test]
+    fn session_state_tracks_session_id() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"session_state\",\"session_id\":\"sess-9\",\"turn_count\":1}"));
+        assert_eq!(s.session_id.as_deref(), Some("sess-9"));
     }
 
     #[test]
