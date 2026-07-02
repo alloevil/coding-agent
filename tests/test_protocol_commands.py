@@ -433,3 +433,13 @@ def test_agent_switch_unknown_is_friendly(monkeypatch, tmp_path):
         text = next(d["text"] for t, d in proto._events if t == "command_result")
         assert "not found" in text and "/agents" in text
     asyncio.run(main())
+
+
+def test_setup_emits_open_setup_event(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        await proto._handle_command_action("setup")
+        kinds = [t for t, _ in proto._events]
+        assert "open_setup" in kinds  # TUI reopens the wizard on this
+        assert "command_result" in kinds
+    asyncio.run(main())
