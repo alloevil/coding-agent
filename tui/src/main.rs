@@ -7,6 +7,7 @@
 mod app;
 mod backend;
 mod composer;
+mod file_index;
 mod proto;
 mod render;
 mod setup;

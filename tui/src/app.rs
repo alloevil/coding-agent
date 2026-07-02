@@ -164,6 +164,8 @@ pub struct AppState {
     pub max_context: u64,
     /// Current plan/todo steps (description, status) for the live panel.
     pub plan: Vec<crate::render::PlanStep>,
+    /// Indexed workspace files for `@file` completion (scanned once at startup).
+    pub files: Vec<String>,
 }
 
 impl AppState {
@@ -450,6 +452,8 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool) ->
 
     let mut state = AppState::new();
     state.model = model_hint;
+    // Index workspace files once for @file completion (cheap, bounded).
+    state.files = crate::file_index::scan(std::path::Path::new("."));
     let mut composer = Composer::new();
     let mut turn_running = false;
     // --setup forces the wizard open immediately; otherwise it opens when the
@@ -627,7 +631,18 @@ async fn handle_key(
                         }
                     }
                 }
-                (KeyCode::Tab, _) => { composer.complete_slash(); }
+                (KeyCode::Tab, _) => {
+                    // @file completion takes priority when an @token is active;
+                    // otherwise fall back to slash-command completion.
+                    if let Some(tok) = composer.at_token() {
+                        let hits = crate::file_index::fuzzy_match(&state.files, &tok, 1);
+                        if let Some(path) = hits.first() {
+                            composer.complete_at(path);
+                        }
+                    } else {
+                        composer.complete_slash();
+                    }
+                }
                 (KeyCode::Up, _) => composer.history_prev(),
                 (KeyCode::Down, _) => composer.history_next(),
                 (KeyCode::PageUp, _) => {
@@ -813,8 +828,21 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     );
 
     // Status / context-aware hint line.
+    let at_tok = composer.at_token();
     let cands = composer.slash_candidates();
-    if !cands.is_empty() {
+    if let Some(tok) = at_tok {
+        // @file completion popup: show matching workspace files.
+        let hits = crate::file_index::fuzzy_match(&state.files, &tok, 8);
+        let text = if hits.is_empty() {
+            format!(" @{tok}  (no matching files)")
+        } else {
+            format!(" @ ⇥  {}", hits.join("  "))
+        };
+        f.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::Cyan)),
+            chunks[4],
+        );
+    } else if !cands.is_empty() {
         // While typing a slash command, show matching candidates (even one) so
         // the user can see what `/` offers and Tab-complete.
         let shown: Vec<&str> = cands.iter().take(12).copied().collect();
