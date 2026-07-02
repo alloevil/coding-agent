@@ -274,6 +274,36 @@ impl AppState {
                         } else { s }
                     })
                     .unwrap_or_default();
+                // Edit/write tools: show a diff preview in the transcript so the
+                // user sees WHAT they're approving (Claude Code behavior).
+                if let Some(a) = ev.rest.get("arguments") {
+                    let preview = if name == "file_edit" {
+                        match (a.get("old_text").and_then(|v| v.as_str()),
+                               a.get("new_text").and_then(|v| v.as_str())) {
+                            (Some(old), Some(new)) => {
+                                let mut d = String::new();
+                                for l in old.lines().take(8) { d.push_str(&format!("-{l}\n")); }
+                                for l in new.lines().take(8) { d.push_str(&format!("+{l}\n")); }
+                                Some(d)
+                            }
+                            _ => None,
+                        }
+                    } else if name == "file_write" {
+                        a.get("content").and_then(|v| v.as_str()).map(|c| {
+                            let mut d = String::new();
+                            for l in c.lines().take(8) { d.push_str(&format!("+{l}\n")); }
+                            if c.lines().count() > 8 { d.push_str("+…\n"); }
+                            d
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(d) = preview {
+                        self.transcript.push(Entry::ToolCall {
+                            name: format!("{name}?"), target: args.clone() });
+                        self.transcript.push(Entry::ToolResult { ok: true, body: d });
+                    }
+                }
                 self.pending_permission = Some((name, args));
                 self.status_str = "awaiting approval".into();
             }
@@ -1424,6 +1454,32 @@ mod tests {
             "{{\"type\":\"permission_request\",\"tool_name\":\"t\",\"arguments\":{{\"a\":\"{long}\"}}}}")));
         let (_, args) = s.pending_permission.as_ref().unwrap();
         assert!(args.chars().count() <= 170, "args summary is capped");
+    }
+
+    #[test]
+    fn edit_permission_shows_diff_preview() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"permission_request\",\"tool_name\":\"file_edit\",\"arguments\":{\"path\":\"a.py\",\"old_text\":\"x = 1\",\"new_text\":\"x = 2\"}}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("-x = 1"), "old line shown as deletion: {joined}");
+        assert!(joined.contains("+x = 2"), "new line shown as addition");
+        assert!(s.pending_permission.is_some());
+    }
+
+    #[test]
+    fn write_permission_shows_content_preview() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"permission_request\",\"tool_name\":\"file_write\",\"arguments\":{\"path\":\"b.py\",\"content\":\"print(1)\"}}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("+print(1)"));
+    }
+
+    #[test]
+    fn shell_permission_has_no_diff_preview() {
+        let mut s = AppState::new();
+        let before = s.transcript.len();
+        s.apply(&ev("{\"type\":\"permission_request\",\"tool_name\":\"shell_exec\",\"arguments\":{\"command\":\"ls\"}}"));
+        assert_eq!(s.transcript.len(), before, "non-edit tools add no preview");
     }
 
     #[test]
