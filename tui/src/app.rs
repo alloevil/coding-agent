@@ -181,6 +181,8 @@ pub struct AppState {
     pub want_resume: bool,
     /// Active session-picker modal: (sessions as (id, label), selected index).
     pub session_picker: Option<(Vec<(String, String)>, usize)>,
+    /// Current permission mode (Shift+Tab toggles; mirrors backend config).
+    pub auto_approve: bool,
 }
 
 impl AppState {
@@ -209,6 +211,13 @@ impl AppState {
                     .and_then(|v| v.as_bool()).unwrap_or(false);
                 self.max_context = ev.rest.get("max_context_tokens")
                     .and_then(|v| v.as_u64()).unwrap_or(0);
+                self.auto_approve = ev.rest.get("auto_approve")
+                    .and_then(|v| v.as_bool()).unwrap_or(false);
+            }
+            "config_updated" => {
+                if let Some(v) = ev.rest.get("auto_approve").and_then(|v| v.as_bool()) {
+                    self.auto_approve = v;
+                }
             }
             "model_changed" => {
                 if let Some(m) = ev.str_field("model") {
@@ -853,6 +862,12 @@ async fn handle_key(
                         }
                     }
                 }
+                (KeyCode::BackTab, _) => {
+                    // Shift+Tab: toggle auto-approve (Claude Code's signature).
+                    let next = !state.auto_approve;
+                    state.auto_approve = next; // optimistic; config_updated confirms
+                    backend.send(&Request::SetAutoApprove { value: next }).await?;
+                }
                 (KeyCode::Tab, _) => {
                     // @file completion takes priority when an @token is active;
                     // otherwise fall back to slash-command completion.
@@ -1107,19 +1122,22 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         spans.push(Span::styled("esc to interrupt", Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Line::from(spans)), chunks[4]);
     } else {
-        // Idle: status + context-aware key hints.
-        let status_span = Span::styled(format!(" [{}] ", state.status_str),
-                                       Style::default().fg(Color::DarkGray));
+        // Idle: mode + status + context-aware key hints.
+        let mut spans = Vec::new();
+        if state.auto_approve {
+            // Claude Code-style mode chip when tools run unprompted.
+            spans.push(Span::styled(" ⏵⏵ auto-accept ",
+                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        }
+        spans.push(Span::styled(format!(" [{}] ", state.status_str),
+                                Style::default().fg(Color::DarkGray)));
         let hint = if state.scroll > 0 {
             "PgUp/PgDn scroll · End follow · ⏎ send"
         } else {
-            "⏎ send · ⇧⏎ newline · / commands · ↑↓ history · ⌃C quit"
+            "⏎ send · ⇧⏎ newline · / commands · @ files · ⇧⇥ auto-accept · ⌃C quit"
         };
-        let line = Line::from(vec![
-            status_span,
-            Span::styled(hint, Style::default().fg(Color::DarkGray)),
-        ]);
-        f.render_widget(Paragraph::new(line), chunks[4]);
+        spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Line::from(spans)), chunks[4]);
     }
 }
 
@@ -1266,6 +1284,15 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"ready\",\"model\":\"m\",\"max_context_tokens\":200000}"));
         assert_eq!(s.max_context, 200000);
+    }
+
+    #[test]
+    fn ready_and_config_updated_track_auto_approve() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"ready\",\"model\":\"m\",\"auto_approve\":true}"));
+        assert!(s.auto_approve);
+        s.apply(&ev("{\"type\":\"config_updated\",\"auto_approve\":false}"));
+        assert!(!s.auto_approve);
     }
 
     #[test]
