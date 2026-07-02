@@ -66,6 +66,15 @@ def test_doctor_action_and_probe():
     assert dispatch("/doctor probe", _ctx()).payload == "doctor:probe"
 
 
+def test_permissions_show_and_set():
+    assert dispatch("/permissions", _ctx()).payload == "permissions:"
+    assert dispatch("/permissions auto", _ctx()).payload == "permissions:auto"
+    assert dispatch("/permissions ask", _ctx()).payload == "permissions:ask"
+    # unknown arg → usage print, not an action
+    r = dispatch("/permissions bogus", _ctx())
+    assert r.kind == "print" and "Usage" in r.payload
+
+
 def test_tools_lists_registered():
     r = dispatch("/tools", _ctx())
     assert r.kind == "print"

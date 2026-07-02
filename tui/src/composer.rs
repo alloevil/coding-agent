@@ -9,7 +9,7 @@ pub const SLASH_COMMANDS: &[&str] = &[
     "help", "tools", "cost", "compact", "plan", "plan-mode", "agents", "agent",
     "model", "status", "config", "setup", "clear", "new", "sessions", "resume",
     "diff", "context", "recap", "review", "memory", "export", "undo", "mcp",
-    "hooks", "doctor", "init", "quit", "exit",
+    "hooks", "doctor", "permissions", "init", "quit", "exit",
 ];
 
 /// A single-line editable input buffer with a cursor.
