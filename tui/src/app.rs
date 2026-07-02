@@ -416,12 +416,27 @@ impl AppState {
                 if let Some(sid) = ev.str_field("session_id") {
                     self.session_id = Some(sid.to_string());
                 }
-                // Update context usage for the header.
-                let p = ev.rest.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let c = ev.rest.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                if p + c > 0 { self.used_tokens = p + c; }
+                // Update context usage for the header + a per-turn summary line
+                // (Claude Code shows a light stat after each turn).
                 if let Some(m) = ev.rest.get("max_context_tokens").and_then(|v| v.as_u64()) {
                     if m > 0 { self.max_context = m; }
+                }
+                let p = ev.rest.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let c = ev.rest.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                if p + c > 0 {
+                    self.used_tokens = p + c;
+                    let elapsed = self.elapsed_secs();
+                    let ctx = if self.max_context > 0 {
+                        format!("{}/{} ctx",
+                            crate::render::fmt_tokens(self.used_tokens),
+                            crate::render::fmt_tokens(self.max_context))
+                    } else {
+                        format!("{} ctx", crate::render::fmt_tokens(self.used_tokens))
+                    };
+                    self.transcript.push(Entry::Notice(format!(
+                        "✓ turn {} · {} · {}",
+                        self.turn, ctx,
+                        crate::render::fmt_elapsed_compact(elapsed))));
                 }
                 self.status_str = Status::Idle.label().into();
                 return true;
@@ -1444,6 +1459,25 @@ mod tests {
         s.apply(&ev("{\"type\":\"session_state\",\"prompt_tokens\":1000,\"completion_tokens\":500,\"max_context_tokens\":200000}"));
         assert_eq!(s.used_tokens, 1500);
         assert_eq!(s.max_context, 200000);
+    }
+
+    #[test]
+    fn turn_end_appends_summary_line() {
+        let mut s = AppState::new();
+        s.turn = 2;
+        s.apply(&ev("{\"type\":\"session_state\",\"prompt_tokens\":12000,\"completion_tokens\":300,\"max_context_tokens\":200000}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("✓ turn 2"), "summary shows turn number: {joined}");
+        assert!(joined.contains("12.3k/200.0k ctx"), "summary shows ctx usage");
+    }
+
+    #[test]
+    fn no_summary_without_tokens() {
+        let mut s = AppState::new();
+        let before = s.transcript.len();
+        // session_state without token fields (e.g. --continue adoption) → no noise
+        s.apply(&ev("{\"type\":\"session_state\",\"session_id\":\"x\",\"turn_count\":0}"));
+        assert_eq!(s.transcript.len(), before);
     }
 
     #[test]
