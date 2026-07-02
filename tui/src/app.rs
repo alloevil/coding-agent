@@ -177,6 +177,10 @@ pub struct AppState {
     pub session_id: Option<String>,
     /// --continue: adopt the most recent session once sessions_list arrives.
     pub want_continue: bool,
+    /// --resume: open a session picker when sessions_list arrives.
+    pub want_resume: bool,
+    /// Active session-picker modal: (sessions as (id, label), selected index).
+    pub session_picker: Option<(Vec<(String, String)>, usize)>,
 }
 
 impl AppState {
@@ -293,6 +297,29 @@ impl AppState {
                                 format!("↩ Resumed session {short}… — {title}")
                             }));
                         }
+                    }
+                } else if self.want_resume {
+                    // --resume: open the picker (↑↓ select, Enter adopt, Esc new).
+                    self.want_resume = false;
+                    let items: Vec<(String, String)> = ev.rest.get("sessions")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|s| {
+                            let id = s.get("id").and_then(|v| v.as_str())?;
+                            let title = s.get("metadata")
+                                .and_then(|m| m.get("title")).and_then(|v| v.as_str())
+                                .unwrap_or("(untitled)");
+                            let updated = s.get("updated_at").and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let short: String = id.chars().take(8).collect();
+                            Some((id.to_string(), format!("{short}…  {title}  {updated}")))
+                        }).collect())
+                        .unwrap_or_default();
+                    if items.is_empty() {
+                        self.transcript.push(Entry::Notice(
+                            "No sessions to resume — starting fresh.".into()));
+                    } else {
+                        self.session_picker = Some((items, 0));
+                        self.status_str = "pick a session".into();
                     }
                 }
             }
@@ -460,6 +487,21 @@ impl AppState {
             out.push(Line::from(Span::styled(
                 format!("❌ {e}"), Style::default().fg(Color::Red))));
         }
+        // Session picker (--resume): list with a highlighted selection.
+        if let Some((items, sel)) = &self.session_picker {
+            out.push(Line::from(""));
+            out.push(Line::from(Span::styled(
+                " Resume which session?  (↑↓ select · ⏎ resume · Esc new)",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+            for (i, (_, label)) in items.iter().enumerate() {
+                let (marker, style) = if i == *sel {
+                    ("▶ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                } else {
+                    ("  ", Style::default().fg(Color::DarkGray))
+                };
+                out.push(Line::from(Span::styled(format!(" {marker}{label}"), style)));
+            }
+        }
         out
     }
 
@@ -514,7 +556,7 @@ fn summarize_result_body(body: &str) -> String {
 
 /// Run the full-screen TUI event loop. Drives the backend and renders state.
 pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
-                 want_continue: bool) -> std::io::Result<()> {
+                 want_continue: bool, want_resume: bool) -> std::io::Result<()> {
     // A full-screen TUI needs a real interactive terminal. When stdout/stdin
     // isn't a TTY (piped, non-interactive shell, some IDE terminals), don't
     // fail with a cryptic raw-mode OS error — exit clearly so the launcher can
@@ -541,8 +583,10 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
     // Index workspace files once for @file completion (cheap, bounded).
     state.files = crate::file_index::scan(std::path::Path::new("."));
     // --continue: ask for recent sessions; sessions_list adopts the latest.
-    if want_continue {
-        state.want_continue = true;
+    // --resume: ask for the list; sessions_list opens the picker instead.
+    if want_continue || want_resume {
+        state.want_continue = want_continue;
+        state.want_resume = want_resume && !want_continue;
         backend.send(&Request::ListSessions).await?;
     }
     let mut composer = Composer::new();
@@ -699,6 +743,41 @@ async fn handle_key(
         CtEvent::Paste(s) => composer.insert_str(&s),
         CtEvent::Key(k) if k.kind != KeyEventKind::Release => {
             use crossterm::event::KeyModifiers as M;
+            // Modal: session picker (--resume) — ↑↓ select, Enter adopt, Esc fresh.
+            if let Some((items, sel)) = state.session_picker.clone() {
+                match k.code {
+                    KeyCode::Up => {
+                        if let Some(p) = state.session_picker.as_mut() {
+                            p.1 = p.1.saturating_sub(1);
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(p) = state.session_picker.as_mut() {
+                            p.1 = (p.1 + 1).min(items.len().saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some((id, label)) = items.get(sel) {
+                            state.session_id = Some(id.clone());
+                            state.transcript.push(crate::render::Entry::Notice(
+                                format!("↩ Resumed session {label}")));
+                        }
+                        state.session_picker = None;
+                        state.status_str = Status::Idle.label().into();
+                    }
+                    KeyCode::Esc => {
+                        state.session_picker = None;
+                        state.status_str = Status::Idle.label().into();
+                        state.transcript.push(crate::render::Entry::Notice(
+                            "Starting a fresh session.".into()));
+                    }
+                    KeyCode::Char('c') if k.modifiers.contains(M::CONTROL) => {
+                        state.should_quit = true;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             // Modal: a tool is awaiting approval — y approve / n (or Esc) deny /
             // a approve + auto-approve for the rest of the session.
             if state.pending_permission.is_some() {
@@ -1281,6 +1360,32 @@ mod tests {
         assert!(joined.contains("Which DB?"));
         assert!(joined.contains("1. sqlite"));
         assert!(joined.contains("2. postgres"));
+    }
+
+    #[test]
+    fn resume_opens_picker_with_labels() {
+        let mut s = AppState::new();
+        s.want_resume = true;
+        s.apply(&ev("{\"type\":\"sessions_list\",\"sessions\":[{\"id\":\"abc12345678\",\"updated_at\":\"2026-07-02\",\"metadata\":{\"title\":\"fix bug\"}},{\"id\":\"def99999999\",\"metadata\":{}}]}"));
+        let (items, sel) = s.session_picker.as_ref().expect("picker open");
+        assert_eq!(items.len(), 2);
+        assert_eq!(*sel, 0);
+        assert!(items[0].1.contains("abc12345"));
+        assert!(items[0].1.contains("fix bug"));
+        assert!(items[1].1.contains("(untitled)"));
+        // picker rendered in the transcript lines
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("Resume which session?"));
+        assert!(joined.contains("▶"));
+    }
+
+    #[test]
+    fn resume_with_no_sessions_starts_fresh() {
+        let mut s = AppState::new();
+        s.want_resume = true;
+        s.apply(&ev("{\"type\":\"sessions_list\",\"sessions\":[]}"));
+        assert!(s.session_picker.is_none());
+        assert!(rendered(&s).join("\n").contains("starting fresh"));
     }
 
     #[test]
