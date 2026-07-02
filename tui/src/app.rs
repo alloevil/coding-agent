@@ -1545,6 +1545,18 @@ mod tests {
     }
 
     #[test]
+    fn multiline_command_result_renders_each_line() {
+        // /doctor, /status, /mcp emit multi-line text — every line must appear
+        // as its own transcript row (not collapsed into one).
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"command_result\",\"text\":\"📊 Session status\\n  turn: 3\\n  approval: ask\"}"));
+        let out = rendered(&s);
+        assert!(out.iter().any(|l| l.contains("Session status")));
+        assert!(out.iter().any(|l| l.contains("turn: 3")));
+        assert!(out.iter().any(|l| l.contains("approval: ask")));
+    }
+
+    #[test]
     fn quit_event_sets_should_quit() {
         let mut s = AppState::new();
         let ended = s.apply(&ev("{\"type\":\"quit\"}"));
