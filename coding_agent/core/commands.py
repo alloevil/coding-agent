@@ -68,6 +68,7 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /undo        — revert the last file change",
         "  /mcp         — list configured MCP servers",
         "  /hooks       — list configured lifecycle hooks",
+        "  /doctor      — run an environment health check (/doctor probe to hit the endpoint)",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -179,6 +180,12 @@ def _cmd_mcp(args: str, ctx: CommandContext) -> CommandResult:
 def _cmd_hooks(args: str, ctx: CommandContext) -> CommandResult:
     # 列出配置的生命周期 hooks（后端读 config 解析）。
     return CommandResult("action", "hooks")
+
+
+def _cmd_doctor(args: str, ctx: CommandContext) -> CommandResult:
+    # 环境自检；/doctor probe 额外做一次真实端点探测。
+    return CommandResult("action", "doctor:probe" if args.strip().lower() == "probe"
+                         else "doctor")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -325,6 +332,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "undo": _cmd_undo,
     "mcp": _cmd_mcp,
     "hooks": _cmd_hooks,
+    "doctor": _cmd_doctor,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
