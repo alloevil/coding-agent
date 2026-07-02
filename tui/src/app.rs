@@ -7,8 +7,9 @@
 
 use std::io::Stdout;
 
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event as CtEvent, KeyCode,
-                       KeyEventKind};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+                       EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
+                       MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
                           LeaveAlternateScreen};
 use crossterm::execute;
@@ -584,7 +585,7 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     let mut term = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let mut state = AppState::new();
@@ -611,7 +612,8 @@ pub async fn run(mut backend: Backend, model_hint: String, force_setup: bool,
 
     // Restore terminal no matter what.
     disable_raw_mode().ok();
-    execute!(term.backend_mut(), LeaveAlternateScreen, DisableBracketedPaste).ok();
+    execute!(term.backend_mut(), LeaveAlternateScreen, DisableBracketedPaste,
+             DisableMouseCapture).ok();
     term.show_cursor().ok();
     backend.shutdown().await;
     result
@@ -750,6 +752,17 @@ async fn handle_key(
 ) -> std::io::Result<()> {
     match ct {
         CtEvent::Paste(s) => composer.insert_str(&s),
+        CtEvent::Mouse(m) => {
+            // Wheel scroll over the transcript (3 lines per notch).
+            match m.kind {
+                MouseEventKind::ScrollUp => {
+                    let total = state.render_lines(*turn_running, 80).len();
+                    state.scroll_up(3, total, 10);
+                }
+                MouseEventKind::ScrollDown => state.scroll_down(3),
+                _ => {}
+            }
+        }
         CtEvent::Key(k) if k.kind != KeyEventKind::Release => {
             use crossterm::event::KeyModifiers as M;
             // Modal: session picker (--resume) — ↑↓ select, Enter adopt, Esc fresh.
