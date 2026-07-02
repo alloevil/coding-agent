@@ -22,7 +22,9 @@ pub enum Request {
         model: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         api_base_url: Option<String>,
-        auto_approve: bool,
+        /// None = don't override the backend's configured value (config.json).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auto_approve: Option<bool>,
         /// Backend protocol: "openai" or "anthropic".
         #[serde(skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
@@ -116,7 +118,7 @@ mod tests {
     #[test]
     fn init_omits_none_fields() {
         let r = Request::Init { api_key: "k".into(), model: None,
-                                api_base_url: None, auto_approve: true,
+                                api_base_url: None, auto_approve: Some(true),
                                 protocol: None, extra_headers: None };
         let line = r.to_line();
         assert!(line.contains("\"api_key\":\"k\""));

@@ -166,6 +166,9 @@ pub struct AppState {
     pub plan: Vec<crate::render::PlanStep>,
     /// Indexed workspace files for `@file` completion (scanned once at startup).
     pub files: Vec<String>,
+    /// Pending tool-permission request: (tool name, argument summary).
+    /// While set, the key handler is modal: y approve / n deny / a always-allow.
+    pub pending_permission: Option<(String, String)>,
 }
 
 impl AppState {
@@ -224,6 +227,23 @@ impl AppState {
                 self.transcript.push(Entry::ToolResult { ok: true, body: out });
                 self.status_str = Status::Idle.label().into();
                 return true; // ends the "turn"
+            }
+            "permission_request" => {
+                // Tool wants approval: capture name + a compact argument summary
+                // and switch the key handler into modal y/n/a mode.
+                let name = ev.str_field("tool_name").or_else(|| ev.str_field("name"))
+                    .unwrap_or("?").to_string();
+                let args = ev.rest.get("arguments")
+                    .map(|v| {
+                        let s = v.to_string();
+                        if s.chars().count() > 160 {
+                            let cut: String = s.chars().take(160).collect();
+                            format!("{cut}…")
+                        } else { s }
+                    })
+                    .unwrap_or_default();
+                self.pending_permission = Some((name, args));
+                self.status_str = "awaiting approval".into();
             }
             "config_saved" => {
                 self.needs_setup = false;
@@ -618,6 +638,30 @@ async fn handle_key(
         CtEvent::Paste(s) => composer.insert_str(&s),
         CtEvent::Key(k) if k.kind != KeyEventKind::Release => {
             use crossterm::event::KeyModifiers as M;
+            // Modal: a tool is awaiting approval — y approve / n (or Esc) deny /
+            // a approve + auto-approve for the rest of the session.
+            if state.pending_permission.is_some() {
+                match k.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        state.pending_permission = None;
+                        backend.send(&Request::PermissionResponse { approved: true }).await?;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        state.pending_permission = None;
+                        backend.send(&Request::PermissionResponse { approved: false }).await?;
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        state.pending_permission = None;
+                        backend.send(&Request::SetAutoApprove { value: true }).await?;
+                        backend.send(&Request::PermissionResponse { approved: true }).await?;
+                    }
+                    KeyCode::Char('c') if k.modifiers.contains(M::CONTROL) => {
+                        state.should_quit = true;
+                    }
+                    _ => {} // ignore everything else while modal
+                }
+                return Ok(());
+            }
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
                 (KeyCode::Esc, _) => {
@@ -840,7 +884,16 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     // Status / context-aware hint line.
     let at_tok = composer.at_token();
     let cands = composer.slash_candidates();
-    if let Some(tok) = at_tok {
+    if let Some((tool, args)) = &state.pending_permission {
+        // Modal approval prompt takes over the whole line.
+        let line = Line::from(vec![
+            Span::styled(" 🔐 allow ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(tool.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {args}  "), Style::default().fg(Color::DarkGray)),
+            Span::styled("[y]es  [n]o  [a]lways", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]);
+        f.render_widget(Paragraph::new(line), chunks[4]);
+    } else if let Some(tok) = at_tok {
         // @file completion popup: show matching workspace files.
         let hits = crate::file_index::fuzzy_match(&state.files, &tok, 8);
         let text = if hits.is_empty() {
@@ -1067,6 +1120,26 @@ mod tests {
         let joined = rendered(&s).join("\n");
         assert!(joined.contains("ls"));
         assert!(joined.contains("a.rs"));
+    }
+
+    #[test]
+    fn permission_request_sets_modal_state() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"permission_request\",\"tool_name\":\"shell_exec\",\"arguments\":{\"command\":\"rm -rf /tmp/x\"}}"));
+        let (tool, args) = s.pending_permission.as_ref().expect("modal set");
+        assert_eq!(tool, "shell_exec");
+        assert!(args.contains("rm -rf"));
+        assert_eq!(s.status_str, "awaiting approval");
+    }
+
+    #[test]
+    fn permission_request_truncates_long_args() {
+        let mut s = AppState::new();
+        let long = "x".repeat(500);
+        s.apply(&ev(&format!(
+            "{{\"type\":\"permission_request\",\"tool_name\":\"t\",\"arguments\":{{\"a\":\"{long}\"}}}}")));
+        let (_, args) = s.pending_permission.as_ref().unwrap();
+        assert!(args.chars().count() <= 170, "args summary is capped");
     }
 
     #[test]
