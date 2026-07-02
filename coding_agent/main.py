@@ -98,6 +98,7 @@ class CodingAgent:
             temperature=self.config.temperature,
             extra_headers=self.config.extra_headers,
             protocol=getattr(self.config, "protocol", "openai"),
+            thinking_budget=getattr(self.config, "thinking_budget", 0),
         )
         
         # 初始化 Agent Loop

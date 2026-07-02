@@ -82,6 +82,7 @@ class AgentProtocol:
             temperature=config.temperature,
             extra_headers=getattr(config, "extra_headers", None),
             protocol=getattr(config, "protocol", "openai"),
+            thinking_budget=getattr(config, "thinking_budget", 0),
         )
         
         # 设置模型调用

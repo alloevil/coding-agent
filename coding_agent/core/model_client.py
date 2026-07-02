@@ -49,10 +49,13 @@ class ModelClient:
         extra_headers: dict[str, str] | None = None,
         prompt_cache_key: str | None = None,
         protocol: str = "openai",
+        thinking_budget: int = 0,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # extended-thinking 预算（anthropic）：>0 时请求带 thinking，透出推理块。
+        self.thinking_budget = thinking_budget
         # 后端协议：openai（/chat/completions）或 anthropic（/v1/messages）。
         self.protocol = protocol
         self.max_tokens = max_tokens
@@ -171,7 +174,8 @@ class ModelClient:
         on_reasoning_delta: TextDeltaHandler | None = None,
     ) -> dict[str, Any]:
         if self.protocol == "anthropic":
-            return await self._complete_stream_anthropic(messages, tools, on_text_delta)
+            return await self._complete_stream_anthropic(
+                messages, tools, on_text_delta, on_reasoning_delta)
         payload = self._payload(messages, tools, stream=True)
         # 请求在流末尾附带 usage（OpenAI 兼容），用于缓存/成本观测
         payload["stream_options"] = {"include_usage": True}
@@ -291,6 +295,12 @@ class ModelClient:
             payload["temperature"] = self.temperature
         if req.get("tools"):
             payload["tools"] = req["tools"]
+        # extended-thinking：透出独立推理块（thinking_delta）。开启需 budget>0。
+        # temperature 与 thinking 不能同时设 → 开 thinking 时省略 temperature。
+        if getattr(self, "thinking_budget", 0):
+            payload["thinking"] = {"type": "enabled",
+                                   "budget_tokens": self.thinking_budget}
+            payload.pop("temperature", None)
         return payload
 
     async def _complete_nonstream_anthropic(
@@ -313,10 +323,12 @@ class ModelClient:
     async def _complete_stream_anthropic(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None,
         on_text_delta: TextDeltaHandler | None,
+        on_reasoning_delta: TextDeltaHandler | None = None,
     ) -> dict[str, Any]:
         from .anthropic_protocol import AnthropicStreamAccumulator
         payload = self._anthropic_payload(messages, tools, stream=True)
-        acc = AnthropicStreamAccumulator(on_text_delta=on_text_delta)
+        acc = AnthropicStreamAccumulator(on_text_delta=on_text_delta,
+                                         on_reasoning_delta=on_reasoning_delta)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream(
                 "POST",
