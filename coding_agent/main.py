@@ -128,12 +128,27 @@ class CodingAgent:
             import os
             pol.workspace_root = os.getcwd()
 
-        # Skills：把"可用 skills 清单"作为额外 system 块按需注入（渐进式披露）。
-        # 用函数延迟求值，使新增/改动 skill 后无需重启即可生效。
+        # Skills + 项目记忆：作为额外 system 块按需注入（渐进式披露）。
+        # 用函数延迟求值，使新增/改动 skill 或记忆后无需重启即可生效。
+        # 记忆自动召回：会话启动就把 PROJECT.md + 最近知识摆进上下文（不必等
+        # 模型主动 memory_search），对齐 Claude Code 的跨会话记忆。
         from .core.skills import discover_skills, render_available_skills
-        self.agent_loop.set_extra_system_provider(
-            lambda: render_available_skills(discover_skills())
-        )
+        from .memory.project import ProjectMemoryManager
+
+        def _extra_system() -> str:
+            blocks: list[str] = []
+            skills = render_available_skills(discover_skills())
+            if skills:
+                blocks.append(skills)
+            try:
+                mem = ProjectMemoryManager(".").get_context_for_agent()
+            except Exception:
+                mem = ""
+            if mem:
+                blocks.append(mem)
+            return "\n\n".join(blocks)
+
+        self.agent_loop.set_extra_system_provider(_extra_system)
         
         # 当前状态
         self.state: AgentState | None = None
