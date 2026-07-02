@@ -443,3 +443,68 @@ def test_setup_emits_open_setup_event(monkeypatch):
         assert "open_setup" in kinds  # TUI reopens the wizard on this
         assert "command_result" in kinds
     asyncio.run(main())
+
+
+def test_compact_suppresses_stream_and_reports_reduction(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+
+        # A fake context manager whose compact() calls _call_model (like the real
+        # layer-2 summary) and shrinks the token estimate.
+        calls = {"suppressed_during": None}
+
+        class _CM:
+            async def compact(self, state, model_call_fn):
+                # capture whether streaming is suppressed at call time
+                calls["suppressed_during"] = getattr(proto, "_suppress_stream", False)
+                await model_call_fn([{"role": "user", "content": "summarize"}], [])
+                state._tok = 50  # shrink
+
+        class _State:
+            def __init__(self): self._tok = 500
+            def get_token_estimate(self): return self._tok
+        proto.state = _State()
+        proto.agent_loop = type("AL", (), {"context_manager": _CM()})()
+
+        # stub the model client so _call_model streams a chunk (which must be
+        # suppressed) and returns a response
+        class _MC:
+            async def complete(self, ctx, tools, on_text_delta=None,
+                               on_reasoning_delta=None, stream=True):
+                if on_text_delta is not None:
+                    on_text_delta("SECRET SUMMARY TEXT")
+                return {"content": "ok", "tool_calls": [], "usage": {}}
+        proto.model_client = _MC()
+
+        await proto._handle_command_action("compact")
+
+        # streaming was suppressed while compact ran → no stream_text leaked
+        assert calls["suppressed_during"] is True
+        assert not any(t == "stream_text" for t, _ in proto._events), \
+            "compaction summary must not stream into the transcript"
+        # flag restored afterwards
+        assert getattr(proto, "_suppress_stream", False) is False
+        # receipt reports the reduction
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "compacted" in text.lower() and "500" in text and "50" in text
+    asyncio.run(main())
+
+
+def test_compact_noop_receipt_when_nothing_reclaimed(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+
+        class _CM:
+            async def compact(self, state, model_call_fn):
+                pass  # under threshold → no change
+
+        class _State:
+            def get_token_estimate(self): return 100
+        proto.state = _State()
+        proto.agent_loop = type("AL", (), {"context_manager": _CM()})()
+        proto.model_client = type("MC", (), {})()
+
+        await proto._handle_command_action("compact")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "already compact" in text.lower()
+    asyncio.run(main())

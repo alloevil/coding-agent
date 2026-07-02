@@ -137,12 +137,18 @@ class AgentProtocol:
 
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         """调用模型（流式）。委托给统一 ModelClient；正文增量转为 stream_text 事件，
-        推理增量转为 stream_reasoning 事件（供 TUI 显示思考过程）。"""
+        推理增量转为 stream_reasoning 事件（供 TUI 显示思考过程）。
+
+        _suppress_stream=True 时（如 /compact 的内部总结调用）不外发增量事件，
+        避免内部操作的模型输出串进 TUI transcript。"""
+        suppress = getattr(self, "_suppress_stream", False)
         return await self.model_client.complete(
             context,
             tools,
-            on_text_delta=lambda chunk: self._send_event("stream_text", {"text": chunk}),
-            on_reasoning_delta=lambda chunk: self._send_event("stream_reasoning", {"text": chunk}),
+            on_text_delta=(None if suppress
+                           else lambda chunk: self._send_event("stream_text", {"text": chunk})),
+            on_reasoning_delta=(None if suppress
+                                else lambda chunk: self._send_event("stream_reasoning", {"text": chunk})),
             stream=True,
         )
     
@@ -415,8 +421,20 @@ class AgentProtocol:
             self._send_event("command_result", {"text": "✨ Started a new session"})
         elif action == "compact":
             if self.state is not None:
-                await self.agent_loop.context_manager.compact(self.state, self._call_model)
-                self._send_event("command_result", {"text": "🗜️  Context compacted"})
+                before = self.state.get_token_estimate()
+                # 内部总结不应串进 transcript：临时静音流式增量。
+                self._suppress_stream = True
+                try:
+                    await self.agent_loop.context_manager.compact(self.state, self._call_model)
+                finally:
+                    self._suppress_stream = False
+                after = self.state.get_token_estimate()
+                if after < before:
+                    self._send_event("command_result", {
+                        "text": f"🗜️  Context compacted (~{before} → ~{after} tokens)"})
+                else:
+                    self._send_event("command_result", {
+                        "text": "🗜️  Context already compact — nothing to reclaim."})
             else:
                 self._send_event("command_result", {"text": "Nothing to compact yet"})
         elif action == "quit":
