@@ -169,6 +169,9 @@ pub struct AppState {
     /// Pending tool-permission request: (tool name, argument summary).
     /// While set, the key handler is modal: y approve / n deny / a always-allow.
     pub pending_permission: Option<(String, String)>,
+    /// Pending ask_user question: (question, options). While set, Enter submits
+    /// the composer text as the answer (a number picks the matching option).
+    pub pending_question: Option<(String, Vec<String>)>,
     /// Active session id (set when resuming via --continue, or from
     /// session_state events). Sent with every user turn so the backend loads it.
     pub session_id: Option<String>,
@@ -254,6 +257,22 @@ impl AppState {
                     .unwrap_or_default();
                 self.pending_permission = Some((name, args));
                 self.status_str = "awaiting approval".into();
+            }
+            "question" => {
+                // ask_user tool: show the question + numbered options and enter
+                // answer mode (Enter submits the composer text; a number picks).
+                let q = ev.str_field("question").unwrap_or("?").to_string();
+                let opts: Vec<String> = ev.rest.get("options")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let mut text = format!("❓ {q}");
+                for (i, o) in opts.iter().enumerate() {
+                    text.push_str(&format!("\n   {}. {o}", i + 1));
+                }
+                self.transcript.push(Entry::Notice(text));
+                self.pending_question = Some((q, opts));
+                self.status_str = "awaiting answer".into();
             }
             "sessions_list" => {
                 // --continue: adopt the most recent session (list is sorted by
@@ -704,6 +723,34 @@ async fn handle_key(
                 }
                 return Ok(());
             }
+            // Modal: ask_user question — type freely; Enter submits the answer
+            // (a bare number picks the matching option). Backend is blocked on
+            // question_response, so we must always send one.
+            if let Some((_q, opts)) = state.pending_question.clone() {
+                match (k.code, k.modifiers) {
+                    (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
+                    (KeyCode::Enter, _) => {
+                        let raw = composer.take();
+                        let ans = raw.trim().to_string();
+                        // number → option text (1-based), like the CLI
+                        let resolved = ans.parse::<usize>().ok()
+                            .filter(|n| *n >= 1 && *n <= opts.len())
+                            .map(|n| opts[n - 1].clone())
+                            .unwrap_or(ans);
+                        state.pending_question = None;
+                        state.status_str = Status::Thinking.label().into();
+                        state.transcript.push(crate::render::Entry::User(
+                            format!("(answer) {resolved}")));
+                        backend.send(&Request::QuestionResponse { answer: resolved }).await?;
+                    }
+                    (KeyCode::Char(c), _) => composer.insert(c),
+                    (KeyCode::Backspace, _) => composer.backspace(),
+                    (KeyCode::Left, _) => composer.left(),
+                    (KeyCode::Right, _) => composer.right(),
+                    _ => {}
+                }
+                return Ok(());
+            }
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
                 (KeyCode::Esc, _) => {
@@ -935,6 +982,17 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
             Span::styled("[y]es  [n]o  [a]lways", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]);
         f.render_widget(Paragraph::new(line), chunks[4]);
+    } else if state.pending_question.is_some() {
+        let n = state.pending_question.as_ref().map(|(_, o)| o.len()).unwrap_or(0);
+        let hint = if n > 0 {
+            format!(" ❓ type an answer or a number 1–{n}, then ⏎")
+        } else {
+            " ❓ type your answer, then ⏎".to_string()
+        };
+        f.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            chunks[4],
+        );
     } else if let Some(tok) = at_tok {
         // @file completion popup: show matching workspace files.
         let hits = crate::file_index::fuzzy_match(&state.files, &tok, 8);
@@ -1209,6 +1267,20 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"session_state\",\"session_id\":\"sess-9\",\"turn_count\":1}"));
         assert_eq!(s.session_id.as_deref(), Some("sess-9"));
+    }
+
+    #[test]
+    fn question_event_sets_modal_and_renders_options() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"question\",\"question\":\"Which DB?\",\"options\":[\"sqlite\",\"postgres\"]}"));
+        let (q, opts) = s.pending_question.as_ref().expect("question modal set");
+        assert_eq!(q, "Which DB?");
+        assert_eq!(opts.len(), 2);
+        assert_eq!(s.status_str, "awaiting answer");
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("Which DB?"));
+        assert!(joined.contains("1. sqlite"));
+        assert!(joined.contains("2. postgres"));
     }
 
     #[test]

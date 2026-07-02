@@ -78,10 +78,10 @@ pub fn render_entry(e: &Entry) -> Vec<Line<'static>> {
             }
             lines
         }
-        Entry::Notice(t) => vec![Line::from(Span::styled(
-            t.clone(),
+        Entry::Notice(t) => t.lines().map(|l| Line::from(Span::styled(
+            l.to_string(),
             Style::default().fg(C_NOTICE),
-        ))],
+        ))).collect(),
     }
 }
 
