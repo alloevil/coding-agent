@@ -385,3 +385,51 @@ def test_config_shows_redacted(monkeypatch, tmp_path):
         assert "claude-opus-4-8" in text
         assert "sk-supersecret" not in text  # redacted
     asyncio.run(main())
+
+
+def _agent_loop_stub():
+    """Minimal agent_loop for /agent tests: config, tool-filter setter, policy."""
+    class AL:
+        def __init__(self):
+            self.config = type("Cfg", (), {"system_prompt": "base"})()
+            self.permission_policy = type("P", (), {"plan_mode": False})()
+            self._filter = "unset"
+        def set_tool_filter(self, f):
+            self._filter = f
+    return AL()
+
+
+def test_agent_switch_applies_profile(monkeypatch, tmp_path):
+    async def main():
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / ".coding-agent" / "agents"
+        d.mkdir(parents=True)
+        (d / "reviewer.md").write_text(
+            "---\nname: reviewer\ndescription: careful reviewer\n"
+            "model: claude-sonnet-5\n---\nYou review code carefully.")
+        proto = _make_protocol(monkeypatch)
+        proto.state = type("S", (), {"session_id": "s", "turn_count": 0, "metadata": {}})()
+        proto.agent_loop = _agent_loop_stub()
+        proto.model_client.model = "old"
+        await proto._handle_command_action("agent:reviewer")
+        # profile applied: prompt, model (+ model_changed event), metadata
+        assert proto.agent_loop.config.system_prompt == "You review code carefully."
+        assert proto.config.model == "claude-sonnet-5"
+        assert proto.model_client.model == "claude-sonnet-5"
+        assert proto.state.metadata["active_agent"] == "reviewer"
+        assert any(t == "model_changed" for t, _ in proto._events)
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "reviewer" in text and "careful reviewer" in text
+    asyncio.run(main())
+
+
+def test_agent_switch_unknown_is_friendly(monkeypatch, tmp_path):
+    async def main():
+        monkeypatch.chdir(tmp_path)
+        proto = _make_protocol(monkeypatch)
+        proto.state = type("S", (), {"session_id": "s", "turn_count": 0, "metadata": {}})()
+        proto.agent_loop = _agent_loop_stub()
+        await proto._handle_command_action("agent:nope")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "not found" in text and "/agents" in text
+    asyncio.run(main())
