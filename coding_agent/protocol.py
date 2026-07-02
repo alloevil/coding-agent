@@ -450,6 +450,10 @@ class AgentProtocol:
         elif action.startswith("export:"):
             # /export [path]：把当前会话转写导出到 markdown 文件。
             self._handle_export(action.split(":", 1)[1].strip())
+        elif action == "undo":
+            # /undo：恢复最近一次文件改动（编辑日志）。
+            from .core.edit_journal import get_edit_journal
+            self._send_event("command_result", {"text": get_edit_journal().undo_last()})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})

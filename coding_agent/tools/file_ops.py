@@ -282,6 +282,10 @@ class FileWriteTool(Tool):
                     old_content = ""
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # 记录到编辑日志（写入前），供 /undo 回退
+            from ..core.edit_journal import get_edit_journal
+            get_edit_journal().record(str(file_path))
+
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
@@ -385,6 +389,8 @@ class FileEditTool(Tool):
             # 写前检测：文件自上次 file_read 后是否被改过（advisory）
             stale = _staleness_warning(path)
 
+            from ..core.edit_journal import get_edit_journal
+            get_edit_journal().record(str(file_path))
             file_path.write_text(new_content, encoding="utf-8")
             _record_read(path)  # 编辑后刷新追踪基线
             suffix = " (replace_all)" if replace_all else ""
