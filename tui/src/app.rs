@@ -148,6 +148,10 @@ impl AppState {
     pub fn new() -> Self {
         let mut s = AppState::default();
         s.status_str = "ready".into();
+        // Welcome / getting-started notice so the transcript isn't blank on entry.
+        s.transcript.push(crate::render::Entry::Notice(
+            "👋 Welcome to coding-agent. Type a task and press Enter. \
+             / for commands · ↑↓ history · Ctrl-C to quit.".into()));
         s
     }
 
@@ -240,9 +244,10 @@ impl AppState {
     }
 
     /// Fully-rendered transcript as styled lines (committed entries + the
-    /// in-progress live stream + any trailing error).
-    pub fn render_lines(&self) -> Vec<Line<'static>> {
-        use crate::render::{render_entry, render_markdown};
+    /// in-progress live stream + any trailing error). `busy` shows a thinking
+    /// indicator when a turn is running but no text has streamed yet.
+    pub fn render_lines(&self, busy: bool) -> Vec<Line<'static>> {
+        use crate::render::{render_entry, render_markdown, spinner_frame};
         let mut out: Vec<Line<'static>> = Vec::new();
         for e in &self.transcript {
             out.extend(render_entry(e));
@@ -257,6 +262,18 @@ impl AppState {
                 last.spans.push(Span::raw("▌"));
             }
             out.extend(md);
+        } else if busy {
+            // Thinking: model is working but hasn't streamed text yet. Show an
+            // animated indicator in the transcript so the screen isn't static.
+            let label = if self.status_str.contains("tool") {
+                self.status_str.clone()
+            } else {
+                "thinking…".to_string()
+            };
+            out.push(Line::from(Span::styled(
+                format!("{} {}", spinner_frame(self.tick), label),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+            )));
         }
         if let Some(e) = &self.last_error {
             out.push(Line::from(Span::styled(
@@ -514,7 +531,7 @@ async fn handle_key(
                 (KeyCode::Up, _) => composer.history_prev(),
                 (KeyCode::Down, _) => composer.history_next(),
                 (KeyCode::PageUp, _) => {
-                    let total = state.render_lines().len();
+                    let total = state.render_lines(*turn_running).len();
                     state.scroll_up(10, total, 10); // conservative page; clamps in render
                 }
                 (KeyCode::PageDown, _) => state.scroll_down(10),
@@ -631,7 +648,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     );
 
     // Transcript (honor scroll offset; 0 = follow tail)
-    let lines = state.render_lines();
+    let lines = state.render_lines(turn_running);
     let height = chunks[1].height.saturating_sub(2) as usize; // minus borders
     let start = state.view_start(lines.len(), height);
     let end = (start + height).min(lines.len());
@@ -660,10 +677,13 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
 
     // Status / context-aware hint line.
     let cands = composer.slash_candidates();
-    if cands.len() > 1 {
-        // Slash-command completion candidates take over the line.
+    if !cands.is_empty() {
+        // While typing a slash command, show matching candidates (even one) so
+        // the user can see what `/` offers and Tab-complete.
+        let shown: Vec<&str> = cands.iter().take(12).copied().collect();
+        let more = if cands.len() > 12 { " …" } else { "" };
         f.render_widget(
-            Paragraph::new(format!(" Tab: {}", cands.join(" ")))
+            Paragraph::new(format!(" Tab ⇥  {}{}", shown.join("  "), more))
                 .style(Style::default().fg(Color::Cyan)),
             chunks[3],
         );
@@ -710,7 +730,7 @@ mod tests {
 
     /// All rendered transcript lines flattened to strings.
     fn rendered(s: &AppState) -> Vec<String> {
-        s.render_lines().iter().map(line_text).collect()
+        s.render_lines(false).iter().map(line_text).collect()
     }
 
     #[test]
@@ -830,6 +850,32 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"ready\",\"model\":\"claude-opus-4-8\"}"));
         assert_eq!(s.model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn new_state_shows_welcome_notice() {
+        let s = AppState::new();
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("Welcome"), "entry screen should greet the user");
+        assert!(joined.to_lowercase().contains("command"),
+                "welcome should mention slash commands");
+    }
+
+    #[test]
+    fn busy_shows_thinking_indicator_before_text() {
+        let mut s = AppState::new();
+        // Turn started (thinking) but nothing streamed yet.
+        s.apply(&ev("{\"type\":\"thinking\",\"turn\":1}"));
+        let busy = s.render_lines(true).iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
+            .any(|t| t.contains("thinking"));
+        assert!(busy, "a thinking indicator should show while busy with no live text");
+        // Once text streams, the indicator gives way to the live text.
+        s.apply(&ev("{\"type\":\"stream_text\",\"text\":\"hello\"}"));
+        let has_text = s.render_lines(true).iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
+            .any(|t| t.contains("hello"));
+        assert!(has_text);
     }
 
     #[test]
