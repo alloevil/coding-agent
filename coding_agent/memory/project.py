@@ -335,29 +335,36 @@ class ProjectMemoryManager:
         """
         获取供 Agent 启动时注入的项目上下文
 
-        返回 PROJECT.md 内容 + 最近的知识摘要，
-        作为 system prompt 的一部分注入。
+        返回 PROJECT.md 内容 + 最近的知识摘要，作为 system prompt 的一部分注入。
+
+        注意：这段会进入**每一轮**的上下文，所以必须有上限——否则一个超大
+        PROJECT.md 或一条超长知识会持续吃 token。PROJECT.md 截到 ~4KB，
+        每条知识截到 500 字符。
 
         Returns:
             格式化的项目上下文字符串
         """
         parts: list[str] = []
 
-        # PROJECT.md
+        # PROJECT.md（封顶，避免每轮注入巨型文件）
         project_md = self.read_project_md()
         if project_md:
+            if len(project_md) > 4000:
+                project_md = project_md[:4000] + "\n… (PROJECT.md truncated)"
             parts.append("## Project Memory (PROJECT.md)\n\n" + project_md)
 
-        # 最近的知识条目（取最新的 10 条）
+        # 最近的知识条目（取最新的 10 条，每条封顶 500 字符）
         recent = self.load_knowledge()
         if recent:
-            # 按时间倒序，取前 10
             recent.sort(key=lambda e: e.timestamp, reverse=True)
             recent = recent[:10]
             knowledge_lines = ["## Recent Project Knowledge\n"]
             for entry in recent:
                 tag_str = f" [{', '.join(entry.tags)}]" if entry.tags else ""
-                knowledge_lines.append(f"- {entry.content}{tag_str}")
+                content = entry.content
+                if len(content) > 500:
+                    content = content[:500] + "…"
+                knowledge_lines.append(f"- {content}{tag_str}")
             parts.append("\n".join(knowledge_lines))
 
         return "\n\n".join(parts) if parts else ""
