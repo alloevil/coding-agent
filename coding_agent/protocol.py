@@ -177,6 +177,9 @@ class AgentProtocol:
                 self._turn_task = asyncio.ensure_future(
                     self._run_bang_shell(content[1:].strip()))
             else:
+                # @file 引用：把 "@path" 展开成一段带文件内容的上下文附注，
+                # 让模型看到实际内容（Claude Code 行为），而不是字面量 "@path"。
+                content = self._expand_file_mentions(content)
                 # 作为独立任务运行 turn，使 handle_request 立即返回、
                 # dispatcher 能继续读取后续请求（如运行期间的 interrupt）。
                 self._turn_task = asyncio.ensure_future(self._run_turn(content))
@@ -284,6 +287,40 @@ class AgentProtocol:
                         ev["cost_usd"] = round(cost, 4)
                 self._send_event("session_state", ev)
             self._turn_task = None
+
+    def _expand_file_mentions(self, content: str) -> str:
+        """
+        把消息里的 `@path` 引用展开：在原文后附上被引文件的内容，让模型直接看到
+        （Claude Code 行为）。只展开工作区内、真实存在、非二进制、体积合理的文件；
+        找不到就原样保留 `@path`（不报错）。最多展开 5 个，每个截断到 ~16KB。
+        """
+        import re
+        from pathlib import Path
+        # @ 前是行首或空白；path 允许字母数字/._/-，不含空白
+        mentions = re.findall(r"(?:^|\s)@([\w./\-]+)", content)
+        if not mentions:
+            return content
+        root = Path.cwd().resolve()
+        blocks: list[str] = []
+        seen: set[str] = set()
+        for rel in mentions:
+            if rel in seen or len(seen) >= 5:
+                continue
+            seen.add(rel)
+            try:
+                p = (root / rel).resolve()
+                p.relative_to(root)  # 越界即抛 → 跳过
+                if not p.is_file() or p.stat().st_size > 2_000_000:
+                    continue
+                text = p.read_text(encoding="utf-8", errors="replace")
+                if "\x00" in text[:1024]:  # 疑似二进制
+                    continue
+                if len(text) > 16_000:
+                    text = text[:16_000] + "\n… (truncated)"
+                blocks.append(f"\n\n--- {rel} ---\n{text}")
+            except (OSError, ValueError):
+                continue
+        return content + "".join(blocks) if blocks else content
 
     async def _run_bang_shell(self, command: str) -> None:
         """`!command` 直通：用注册的 shell 工具直接执行（沙箱+超时），输出发回
