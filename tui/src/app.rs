@@ -232,6 +232,11 @@ impl AppState {
                     self.auto_approve = v;
                 }
             }
+            "open_setup" => {
+                // /setup mid-session: re-open the wizard. The run loop's guard
+                // opens it when needs_setup flips true and no wizard is active.
+                self.needs_setup = true;
+            }
             "model_changed" => {
                 if let Some(m) = ev.str_field("model") {
                     self.model = m.to_string();
@@ -1545,6 +1550,14 @@ mod tests {
         let ended = s.apply(&ev("{\"type\":\"quit\"}"));
         assert!(ended);
         assert!(s.should_quit, "/exit /quit must close the TUI");
+    }
+
+    #[test]
+    fn open_setup_event_flags_needs_setup() {
+        let mut s = AppState::new();
+        assert!(!s.needs_setup);
+        s.apply(&ev("{\"type\":\"open_setup\"}"));
+        assert!(s.needs_setup, "/setup must reopen the wizard mid-session");
     }
 
     #[test]

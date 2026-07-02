@@ -573,6 +573,10 @@ class AgentProtocol:
             # /agent <name>：切换活动 agent profile（prompt/model/工具过滤）。
             name = action.split(":", 1)[1].strip()
             self._switch_agent_profile(name)
+        elif action == "setup":
+            # /setup：请前端重开配置向导。向导保存后走 save_config 热更配置。
+            self._send_event("open_setup", {})
+            self._send_event("command_result", {"text": "🧩 Opening setup…"})
         else:
             # 其它 action（setup...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
