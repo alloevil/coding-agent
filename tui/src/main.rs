@@ -71,7 +71,9 @@ async fn main() -> std::io::Result<()> {
     // --setup forces the config wizard even when already configured.
     let force_setup = env::args().any(|a| a == "--setup");
     // --continue resumes the most recent session (Claude Code parity).
-    let want_continue = env::args().any(|a| a == "--continue" || a == "-c");
+    // No `-c` alias: the Python CLI uses `-c KEY=VALUE` for config overrides,
+    // and the launcher forwards args to whichever front-end runs.
+    let want_continue = env::args().any(|a| a == "--continue");
 
     let mut backend = Backend::spawn(&python, &cwd)?;
     // Always send init (even with an empty key) so the backend doesn't block
