@@ -11,7 +11,8 @@ def _make_protocol(monkeypatch, home):
     monkeypatch.setattr(P, "register_shell_tools", lambda *a, **k: None)
     monkeypatch.setattr(P, "register_git_tools", lambda *a, **k: None)
     monkeypatch.setenv("CODING_AGENT_HOME", str(home))
-    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"):
+    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY",
+              "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
         monkeypatch.delenv(k, raising=False)
 
     proto = P.AgentProtocol.__new__(P.AgentProtocol)

@@ -148,6 +148,22 @@ questions directly; for a simple question, a short answer is best.
             config.api_key = os.getenv("MODEL_API_KEY", "")
             config.api_base_url = os.getenv("MODEL_BASE_URL", "https://api.openai.com/v1")
             config.model = os.getenv("MODEL_PRIMARY", config.model)
+        # Anthropic 原生协议网关（与 Rust TUI 的 env 读取保持一致）：
+        # ANTHROPIC_AUTH_TOKEN → Bearer 头 + protocol=anthropic。
+        elif os.getenv("ANTHROPIC_AUTH_TOKEN"):
+            tok = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
+            config.api_key = tok
+            config.protocol = "anthropic"
+            if os.getenv("ANTHROPIC_BASE_URL"):
+                config.api_base_url = os.getenv("ANTHROPIC_BASE_URL", "")
+            # 网关多用 Authorization: Bearer（而非 x-api-key）；补上以免 401。
+            headers = dict(config.extra_headers or {})
+            headers.setdefault("Authorization", f"Bearer {tok}")
+            config.extra_headers = headers
+            model = os.getenv("CODING_AGENT_MODEL") or os.getenv("ANTHROPIC_MODEL")
+            if model:
+                # 剥掉网关不识别的方括号后缀（如 `[1m]`）。
+                config.model = model.split("[", 1)[0]
         # OpenAI 兼容
         elif os.getenv("OPENAI_API_KEY"):
             config.api_key = os.getenv("OPENAI_API_KEY", "")
@@ -198,6 +214,14 @@ questions directly; for a simple question, a short answer is best.
             cfg.api_key = env_cfg.api_key
             cfg.api_base_url = env_cfg.api_base_url
             cfg.model = env_cfg.model
+            # Anthropic env 路径还带 protocol + Authorization 头，一并生效，
+            # 否则 config.json 已有 key 时这些会被静默丢弃。
+            if env_cfg.protocol and env_cfg.protocol != cls().protocol:
+                cfg.protocol = env_cfg.protocol
+            if env_cfg.extra_headers:
+                merged = dict(cfg.extra_headers or {})
+                merged.update(env_cfg.extra_headers)
+                cfg.extra_headers = merged
         return cfg
 
     def save(self, path: str) -> None:
