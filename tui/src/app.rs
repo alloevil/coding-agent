@@ -454,10 +454,14 @@ impl AppState {
                     } else {
                         format!("{} ctx", crate::render::fmt_tokens(self.used_tokens))
                     };
+                    // Dollar estimate when the backend can price the model.
+                    let cost = ev.rest.get("cost_usd").and_then(|v| v.as_f64())
+                        .map(|d| format!(" · ${d:.4}"))
+                        .unwrap_or_default();
                     self.transcript.push(Entry::Notice(format!(
-                        "✓ turn {} · {} · {}",
+                        "✓ turn {} · {} · {}{}",
                         self.turn, ctx,
-                        crate::render::fmt_elapsed_compact(elapsed))));
+                        crate::render::fmt_elapsed_compact(elapsed), cost)));
                 }
                 self.status_str = Status::Idle.label().into();
                 return true;
@@ -1536,6 +1540,15 @@ mod tests {
         // session_state without token fields (e.g. --continue adoption) → no noise
         s.apply(&ev("{\"type\":\"session_state\",\"session_id\":\"x\",\"turn_count\":0}"));
         assert_eq!(s.transcript.len(), before);
+    }
+
+    #[test]
+    fn summary_includes_cost_when_present() {
+        let mut s = AppState::new();
+        s.turn = 1;
+        s.apply(&ev("{\"type\":\"session_state\",\"prompt_tokens\":1000,\"completion_tokens\":100,\"max_context_tokens\":200000,\"cost_usd\":0.0234}"));
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("$0.0234"), "cost shown when backend prices it: {joined}");
     }
 
     #[test]
