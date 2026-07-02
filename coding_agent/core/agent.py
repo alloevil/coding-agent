@@ -330,6 +330,7 @@ class AgentLoop:
             #    outputs well before the expensive full-compact threshold, so
             #    context bloat rarely escalates to a model-summary pass.
             if self.context_manager.needs_microcompaction(state):
+                self.context_manager.dedup_file_reads(state)
                 self.context_manager.microcompact(state)
 
             # 4. Context assembly
