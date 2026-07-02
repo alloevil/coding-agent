@@ -66,6 +66,8 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /memory      — show project memory (/memory add <text> to save)",
         "  /export      — export this session to a markdown file",
         "  /undo        — revert the last file change",
+        "  /mcp         — list configured MCP servers",
+        "  /hooks       — list configured lifecycle hooks",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -167,6 +169,16 @@ def _cmd_export(args: str, ctx: CommandContext) -> CommandResult:
 def _cmd_undo(args: str, ctx: CommandContext) -> CommandResult:
     # 撤销最近一次文件改动（file_write/file_edit/apply_patch）。
     return CommandResult("action", "undo")
+
+
+def _cmd_mcp(args: str, ctx: CommandContext) -> CommandResult:
+    # 列出配置的 MCP servers + 连接状态（后端读 config 解析）。
+    return CommandResult("action", "mcp")
+
+
+def _cmd_hooks(args: str, ctx: CommandContext) -> CommandResult:
+    # 列出配置的生命周期 hooks（后端读 config 解析）。
+    return CommandResult("action", "hooks")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -311,6 +323,8 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "memory": _cmd_memory,
     "export": _cmd_export,
     "undo": _cmd_undo,
+    "mcp": _cmd_mcp,
+    "hooks": _cmd_hooks,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,

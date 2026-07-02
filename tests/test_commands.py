@@ -55,6 +55,12 @@ def test_memory_and_export_actions():
     assert dispatch("/export out.md", _ctx()).payload == "export:out.md"
 
 
+def test_undo_mcp_hooks_actions():
+    assert dispatch("/undo", _ctx()).payload == "undo"
+    assert dispatch("/mcp", _ctx()).payload == "mcp"
+    assert dispatch("/hooks", _ctx()).payload == "hooks"
+
+
 def test_tools_lists_registered():
     r = dispatch("/tools", _ctx())
     assert r.kind == "print"

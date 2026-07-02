@@ -454,6 +454,31 @@ class AgentProtocol:
             # /undo：恢复最近一次文件改动（编辑日志）。
             from .core.edit_journal import get_edit_journal
             self._send_event("command_result", {"text": get_edit_journal().undo_last()})
+        elif action == "mcp":
+            # /mcp：列出配置的 MCP servers（+ 是否已连接）。
+            servers = getattr(self.config, "mcp_servers", None) or {}
+            if not servers:
+                text = "No MCP servers configured. Add them under \"mcp_servers\" in config.json."
+            else:
+                connected = len(getattr(self, "_mcp_clients", []) or [])
+                lines = [f"MCP servers ({len(servers)} configured, {connected} connected):"]
+                for name, cfg in servers.items():
+                    where = cfg.get("url") or " ".join(cfg.get("command", [])) or "?"
+                    lines.append(f"  • {name} — {where}")
+                text = "\n".join(lines)
+            self._send_event("command_result", {"text": text})
+        elif action == "hooks":
+            # /hooks：列出配置的生命周期 hooks。
+            hooks = getattr(self.config, "hooks", None) or {}
+            if not hooks:
+                text = "No hooks configured. Add them under \"hooks\" in config.json."
+            else:
+                lines = ["Configured hooks:"]
+                for event, items in hooks.items():
+                    n = len(items) if isinstance(items, list) else 1
+                    lines.append(f"  • {event}: {n} command(s)")
+                text = "\n".join(lines)
+            self._send_event("command_result", {"text": text})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
