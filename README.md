@@ -113,12 +113,37 @@ export CODING_AGENT_MODEL="your-model-name"
 ### Usage
 
 ```bash
-# Run the agent
+# Interactive (full-screen TUI when built; CLI otherwise)
 coding-agent
 
-# Or run directly
-python -m coding_agent.main
+# Resume where you left off
+coding-agent --continue          # most recent session
+coding-agent --resume            # pick from a session list
+
+# Headless one-shot (pipe/CI friendly; final reply on stdout)
+coding-agent -p "summarize recent commits"
+
+# One-run config override (not persisted)
+coding-agent -c model=gpt-4o -c protocol=anthropic
+
+# Maintenance subcommands
+coding-agent config show|get|set|path   # inspect / edit config
+coding-agent doctor [--probe] [--json]  # diagnose config & endpoint
+coding-agent update                     # pull latest + reinstall + rebuild TUI
 ```
+
+In the TUI:
+
+| Key / input | Action |
+|---|---|
+| `/` | slash commands (`/model` `/config` `/help` `/compact` …), Tab-completes |
+| `@` | reference a workspace file (fuzzy completion, Tab to accept) |
+| `!cmd` | run a shell command directly — output shown inline, visible to the model |
+| `Shift+Tab` | toggle auto-accept (⏵⏵ chip when on) |
+| `y / n / a` | approve / deny / always-allow when a tool asks for permission |
+| `Esc` | interrupt a running turn · clear the draft when idle |
+| `Ctrl+L` | clear the screen (session continues) |
+| `PgUp/PgDn`, mouse wheel | scroll the transcript |
 
 ## 🏗️ Architecture
 
