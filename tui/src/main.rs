@@ -70,6 +70,8 @@ async fn main() -> std::io::Result<()> {
     let model_hint = model.clone().unwrap_or_default();
     // --setup forces the config wizard even when already configured.
     let force_setup = env::args().any(|a| a == "--setup");
+    // --continue resumes the most recent session (Claude Code parity).
+    let want_continue = env::args().any(|a| a == "--continue" || a == "-c");
 
     let mut backend = Backend::spawn(&python, &cwd)?;
     // Always send init (even with an empty key) so the backend doesn't block
@@ -88,6 +90,6 @@ async fn main() -> std::io::Result<()> {
         })
         .await?;
 
-    app::run(backend, model_hint, force_setup).await
+    app::run(backend, model_hint, force_setup, want_continue).await
 }
 
