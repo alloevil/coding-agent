@@ -275,6 +275,13 @@ class AgentProtocol:
                     ev["prompt_tokens"] = mc.total_prompt_tokens
                     ev["completion_tokens"] = mc.total_completion_tokens
                     ev["max_context_tokens"] = getattr(self.config, "max_context_tokens", 0)
+                    # 美元估算（未知模型/无覆盖时省略字段，前端就不显示）
+                    from .core.pricing import estimate_cost
+                    cost = estimate_cost(self.config.model, mc.total_prompt_tokens,
+                                         mc.total_completion_tokens,
+                                         override=getattr(self.config, "pricing", None))
+                    if cost is not None:
+                        ev["cost_usd"] = round(cost, 4)
                 self._send_event("session_state", ev)
             self._turn_task = None
 
