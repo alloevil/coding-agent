@@ -278,3 +278,39 @@ def test_doctor_flags_bracket_model(monkeypatch):
         text = next(d["text"] for t, d in proto._events if t == "command_result")
         assert "suffix" in text.lower()  # the [1m] marker is called out
     asyncio.run(main())
+
+
+def test_permissions_shows_current_mode(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.auto_approve = False
+        await proto._handle_command_action("permissions")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "ask" in text.lower() and "confirmed" in text.lower()
+    asyncio.run(main())
+
+
+def test_permissions_toggle_persists(monkeypatch, tmp_path):
+    async def main():
+        # redirect the global config dir so the persist write hits tmp
+        monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path))
+        proto = _make_protocol(monkeypatch)
+        proto.config.auto_approve = False
+        await proto._handle_command_action("permissions:auto")
+        assert proto.config.auto_approve is True
+        # config_updated event fired + result mentions the new mode
+        assert any(t == "config_updated" and d.get("auto_approve") is True
+                   for t, d in proto._events)
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "auto" in text.lower() and "saved" in text.lower()
+        # persisted to disk
+        import json
+        cfg = json.loads((tmp_path / "config.json").read_text())
+        assert cfg["auto_approve"] is True
+        # toggle back to ask
+        proto._events.clear()
+        await proto._handle_command_action("permissions:ask")
+        assert proto.config.auto_approve is False
+        cfg = json.loads((tmp_path / "config.json").read_text())
+        assert cfg["auto_approve"] is False
+    asyncio.run(main())

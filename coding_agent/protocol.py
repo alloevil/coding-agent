@@ -487,6 +487,30 @@ class AgentProtocol:
             else:
                 report = D.run_static(self.config)
             self._send_event("command_result", {"text": report.render()})
+        elif action == "permissions" or action.startswith("permissions:"):
+            # /permissions：显示/切换审批模式。auto=自动放行；ask=逐次确认。
+            spec = action.split(":", 1)[1].strip() if ":" in action else ""
+            if spec in ("auto", "ask"):
+                self.config.auto_approve = (spec == "auto")
+                try:
+                    from .core.setup_wizard import set_config_value
+                    set_config_value("auto_approve",
+                                     "true" if self.config.auto_approve else "false")
+                    saved = " (saved)"
+                except Exception:  # noqa: BLE001 — 切换成功即可，持久化失败不致命
+                    saved = " (not persisted)"
+                self._send_event("config_updated",
+                                 {"auto_approve": self.config.auto_approve})
+                self._send_event("command_result", {
+                    "text": f"🔓 Approval mode → {spec}"
+                            f" ({'auto-approving tools' if spec == 'auto' else 'confirming each write/exec'})"
+                            f"{saved}"})
+            else:
+                mode = "auto" if self.config.auto_approve else "ask"
+                self._send_event("command_result", {
+                    "text": f"Approval mode: {mode}"
+                            f" ({'tools run without confirmation' if mode == 'auto' else 'each write/exec is confirmed'})."
+                            f"\nChange with: /permissions auto|ask"})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})

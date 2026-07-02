@@ -69,6 +69,7 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /mcp         — list configured MCP servers",
         "  /hooks       — list configured lifecycle hooks",
         "  /doctor      — run an environment health check (/doctor probe to hit the endpoint)",
+        "  /permissions — show or set approval mode (/permissions auto|ask)",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -186,6 +187,18 @@ def _cmd_doctor(args: str, ctx: CommandContext) -> CommandResult:
     # 环境自检；/doctor probe 额外做一次真实端点探测。
     return CommandResult("action", "doctor:probe" if args.strip().lower() == "probe"
                          else "doctor")
+
+
+def _cmd_permissions(args: str, ctx: CommandContext) -> CommandResult:
+    # /permissions           → 显示当前审批模式
+    # /permissions auto|ask  → 切换（auto=自动放行，ask=逐次确认）
+    mode = args.strip().lower()
+    if mode in ("auto", "ask"):
+        return CommandResult("action", f"permissions:{mode}")
+    if mode:
+        return CommandResult("print",
+                             "Usage: /permissions [auto|ask]  (no arg shows current mode)")
+    return CommandResult("action", "permissions:")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -333,6 +346,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "mcp": _cmd_mcp,
     "hooks": _cmd_hooks,
     "doctor": _cmd_doctor,
+    "permissions": _cmd_permissions,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
