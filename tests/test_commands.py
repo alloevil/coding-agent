@@ -75,6 +75,11 @@ def test_permissions_show_and_set():
     assert r.kind == "print" and "Usage" in r.payload
 
 
+def test_vim_is_tui_hint_in_cli():
+    r = dispatch("/vim", _ctx())
+    assert r.kind == "print" and "TUI" in r.payload
+
+
 def test_tools_lists_registered():
     r = dispatch("/tools", _ctx())
     assert r.kind == "print"

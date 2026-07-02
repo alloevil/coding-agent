@@ -978,9 +978,14 @@ async fn handle_key(
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
                 (KeyCode::Esc, _) => {
-                    // Running: interrupt. Idle+draft: clear draft. Idle+empty:
-                    // first Esc arms, second Esc (Esc-Esc) rewinds the last turn.
-                    if *turn_running {
+                    // Vim: Esc leaves Insert for Normal without touching the draft.
+                    // Only when already in Normal (nothing to escape) does it fall
+                    // through to the usual interrupt/clear/rewind behavior.
+                    if composer.vim_enabled()
+                        && composer.vim_mode() == crate::composer::VimMode::Insert
+                    {
+                        composer.vim_escape();
+                    } else if *turn_running {
                         backend.send(&Request::Interrupt).await?;
                     } else if !composer.is_empty() {
                         composer.clear(); // discard draft, no history entry
@@ -1006,6 +1011,15 @@ async fn handle_key(
                         let text = composer.take();
                         if text.trim().is_empty() {
                             // nothing to send
+                        } else if matches!(text.trim(), "/vim") {
+                            // Toggle vim modal editing locally (a TUI-only affordance).
+                            let on = composer.toggle_vim();
+                            state.transcript.push(crate::render::Entry::Notice(
+                                if on {
+                                    "Vim mode ON — Esc for NORMAL, i to insert. /vim to disable.".to_string()
+                                } else {
+                                    "Vim mode OFF.".to_string()
+                                }));
                         } else if matches!(text.trim(), "/sessions" | "/resume") {
                             // Open the session picker live (not just at launch).
                             state.want_resume = true;
@@ -1048,7 +1062,13 @@ async fn handle_key(
                     state.scroll_up(10, total, 10); // conservative page; clamps in render
                 }
                 (KeyCode::PageDown, _) => state.scroll_down(10),
-                (KeyCode::Char(c), _) => composer.insert(c),
+                (KeyCode::Char(c), _) => {
+                    // Vim Normal mode intercepts printable keys as motions/commands.
+                    // Insert mode (and vim-off) falls through to a literal insert.
+                    if composer.vim_key(c) == crate::composer::VimOutcome::Passthrough {
+                        composer.insert(c);
+                    }
+                }
                 (KeyCode::Backspace, _) => composer.backspace(),
                 (KeyCode::Delete, _) => composer.delete(),
                 (KeyCode::Left, _) => composer.left(),
@@ -1301,6 +1321,14 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         if state.auto_approve {
             spans.push(Span::styled(" ⏵⏵ auto-accept ",
                 Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw(" "));
+        }
+        // Vim mode chip: NORMAL (blue) / INSERT (green) when vim is enabled.
+        let vim = composer.vim_indicator();
+        if !vim.is_empty() {
+            let bg = if vim == "NORMAL" { Color::Blue } else { Color::Green };
+            spans.push(Span::styled(format!(" {vim} "),
+                Style::default().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD)));
             spans.push(Span::raw(" "));
         }
         // key/label pairs → "key" bright cyan, "label" dim, "·" separators dim.
