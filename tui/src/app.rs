@@ -238,9 +238,14 @@ impl AppState {
                 // and switch the key handler into modal y/n/a mode.
                 let name = ev.str_field("tool_name").or_else(|| ev.str_field("name"))
                     .unwrap_or("?").to_string();
+                // Prefer the salient argument (command/path) over raw JSON.
                 let args = ev.rest.get("arguments")
                     .map(|v| {
-                        let s = v.to_string();
+                        let salient = v.get("command").or_else(|| v.get("path"))
+                            .or_else(|| v.get("file_path"))
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string());
+                        let s = salient.unwrap_or_else(|| v.to_string());
                         if s.chars().count() > 160 {
                             let cut: String = s.chars().take(160).collect();
                             format!("{cut}…")
@@ -1165,7 +1170,8 @@ mod tests {
         s.apply(&ev("{\"type\":\"permission_request\",\"tool_name\":\"shell_exec\",\"arguments\":{\"command\":\"rm -rf /tmp/x\"}}"));
         let (tool, args) = s.pending_permission.as_ref().expect("modal set");
         assert_eq!(tool, "shell_exec");
-        assert!(args.contains("rm -rf"));
+        // salient arg shown directly, not wrapped in JSON braces
+        assert_eq!(args, "rm -rf /tmp/x");
         assert_eq!(s.status_str, "awaiting approval");
     }
 
