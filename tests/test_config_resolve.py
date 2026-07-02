@@ -127,3 +127,30 @@ def test_anthropic_env_keeps_file_model_when_set(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
     cfg = AgentConfig.resolve()
     assert cfg.model == "claude-sonnet-5"
+
+
+def test_anthropic_env_omits_temperature(tmp_path, monkeypatch):
+    # Live bug: the gateway 400s on an explicit temperature. With a bare token
+    # and no file temperature, resolve() must leave temperature=None (omitted),
+    # not the dataclass default 0.7 — matching the Rust TUI.
+    _clear_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    cfg = AgentConfig.resolve()
+    assert cfg.protocol == "anthropic"
+    assert cfg.temperature is None
+
+
+def test_anthropic_env_keeps_explicit_file_temperature(tmp_path, monkeypatch):
+    # If the user explicitly set a temperature in config.json, honor it — the
+    # omit-by-default only applies when the file is silent on temperature.
+    _clear_env(monkeypatch)
+    home = tmp_path / "home"; home.mkdir()
+    (home / "config.json").write_text(json.dumps({"temperature": 0.3}))
+    monkeypatch.setenv("CODING_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    cfg = AgentConfig.resolve()
+    assert cfg.protocol == "anthropic"
+    assert cfg.temperature == 0.3
