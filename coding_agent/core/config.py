@@ -160,6 +160,9 @@ questions directly; for a simple question, a short answer is best.
             headers = dict(config.extra_headers or {})
             headers.setdefault("Authorization", f"Bearer {tok}")
             config.extra_headers = headers
+            # 该 Anthropic 网关拒绝显式 temperature（→ 400）。与 Rust TUI 一致，
+            # 省略 temperature（None = 不带该字段）。
+            config.temperature = None
             model = os.getenv("CODING_AGENT_MODEL") or os.getenv("ANTHROPIC_MODEL")
             if model:
                 # 剥掉网关不识别的方括号后缀（如 `[1m]`）。
@@ -229,6 +232,10 @@ questions directly; for a simple question, a short answer is best.
             # （与 Rust TUI main.rs 一致），避免拿 `gpt-4` 打 anthropic 端点。
             if cfg.protocol == "anthropic" and cfg.model == cls().model:
                 cfg.model = "claude-opus-4-8"
+            # 该 Anthropic 网关拒绝显式 temperature（→ 400）。文件没显式设温度时
+            # 省略它（None）；文件里明确写了 temperature 才保留（用户意图优先）。
+            if cfg.protocol == "anthropic" and "temperature" not in data:
+                cfg.temperature = None
         return cfg
 
     def save(self, path: str) -> None:
