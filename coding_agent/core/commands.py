@@ -65,6 +65,7 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /context     — context window usage breakdown",
         "  /memory      — show project memory (/memory add <text> to save)",
         "  /export      — export this session to a markdown file",
+        "  /undo        — revert the last file change",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -161,6 +162,11 @@ def _cmd_memory(args: str, ctx: CommandContext) -> CommandResult:
 def _cmd_export(args: str, ctx: CommandContext) -> CommandResult:
     # 把当前会话转写导出到 markdown 文件（可带路径）。
     return CommandResult("action", f"export:{args.strip()}")
+
+
+def _cmd_undo(args: str, ctx: CommandContext) -> CommandResult:
+    # 撤销最近一次文件改动（file_write/file_edit/apply_patch）。
+    return CommandResult("action", "undo")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -304,6 +310,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "review": _cmd_review,
     "memory": _cmd_memory,
     "export": _cmd_export,
+    "undo": _cmd_undo,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
