@@ -213,3 +213,35 @@ def test_export_writes_markdown(monkeypatch, tmp_path):
         content = (tmp_path / "out.md").read_text()
         assert "do the thing" in content and "done" in content
     asyncio.run(main())
+
+
+def test_mcp_lists_configured_servers(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.mcp_servers = {"fs": {"command": ["mcp-fs"]},
+                                    "web": {"url": "http://x/mcp"}}
+        proto._mcp_clients = []
+        await proto._handle_command_action("mcp")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "fs" in text and "web" in text and "2 configured" in text
+    asyncio.run(main())
+
+
+def test_mcp_empty_is_helpful(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.mcp_servers = {}
+        await proto._handle_command_action("mcp")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "No MCP servers" in text
+    asyncio.run(main())
+
+
+def test_hooks_lists_configured(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.hooks = {"pre_tool_use": [{"command": "x"}, {"command": "y"}]}
+        await proto._handle_command_action("hooks")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "pre_tool_use" in text and "2 command" in text
+    asyncio.run(main())
