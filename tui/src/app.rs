@@ -960,7 +960,13 @@ async fn handle_key(
                 (KeyCode::Enter, _) => {
                     if !*turn_running {
                         let text = composer.take();
-                        if !text.trim().is_empty() {
+                        if text.trim().is_empty() {
+                            // nothing to send
+                        } else if text.trim() == "/sessions" {
+                            // Open the session picker live (not just at launch).
+                            state.want_resume = true;
+                            backend.send(&Request::ListSessions).await?;
+                        } else {
                             state.push_user(&text);
                             state.scroll = 0; // follow tail on new input
                             state.busy_start_tick = state.tick; // start elapsed clock
