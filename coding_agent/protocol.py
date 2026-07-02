@@ -327,6 +327,14 @@ class AgentProtocol:
         
         event_type = event_map.get(event.event, "unknown")
         self._send_event(event_type, event.data)
+
+        # After each tool result, surface the current plan (if any) as a
+        # structured `plan` event so the TUI can render a live todo panel
+        # (Claude Code's TodoWrite panel). Cheap: just reads state metadata.
+        if event.event == AgentEvent.TOOL_RESULT and self.state is not None:
+            plan = self.state.metadata.get("plan")
+            if plan:
+                self._send_event("plan", {"steps": plan})
     
     async def run(self) -> None:
         """
