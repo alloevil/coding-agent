@@ -44,7 +44,8 @@ def test_write_config_roundtrips_via_resolve(tmp_path, monkeypatch):
     home = tmp_path / "cfg"
     monkeypatch.setenv("CODING_AGENT_HOME", str(home))
     # 清掉可能干扰 resolve 的 env key
-    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"):
+    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY",
+              "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
         monkeypatch.delenv(k, raising=False)
     W.write_config({"provider": "openai", "api_key": "sk-round", "model": "gpt-4o"},
                    home=str(home))

@@ -109,7 +109,8 @@ def test_redact_masks_key_and_bearer():
 def test_set_then_resolve_roundtrip(tmp_path, monkeypatch):
     home = tmp_path / "cfg"
     monkeypatch.setenv("CODING_AGENT_HOME", str(home))
-    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"):
+    for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY",
+              "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
         monkeypatch.delenv(k, raising=False)
     W.set_config_value("api_key", "sk-round", home=str(home))
     W.set_config_value("model", "claude-opus-4-8", home=str(home))

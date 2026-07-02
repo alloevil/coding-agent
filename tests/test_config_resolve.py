@@ -10,7 +10,8 @@ from coding_agent.core.config import AgentConfig
 def _clear_env(monkeypatch):
     for k in ("MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY",
               "MODEL_BASE_URL", "OPENAI_API_BASE", "LLM_BASE_URL",
-              "CODING_AGENT_MODEL", "MODEL_PRIMARY"):
+              "CODING_AGENT_MODEL", "MODEL_PRIMARY",
+              "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -66,3 +67,38 @@ def test_malformed_file_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
     cfg = AgentConfig.resolve()  # 不应抛异常
     assert cfg.max_turns == 100
+
+
+def test_anthropic_env_sets_protocol_and_bearer_header(tmp_path, monkeypatch):
+    # Rust TUI reads ANTHROPIC_AUTH_TOKEN; the Python layer must too, so the
+    # CLI front-end and the "config.json already exists" path behave the same.
+    _clear_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-abc")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://gw/anthropic")
+    monkeypatch.setenv("CODING_AGENT_MODEL", "claude-opus-4-8[1m]")
+    cfg = AgentConfig.resolve()
+    assert cfg.api_key == "tok-abc"
+    assert cfg.protocol == "anthropic"
+    assert cfg.api_base_url == "http://gw/anthropic"
+    assert cfg.extra_headers.get("Authorization") == "Bearer tok-abc"
+    assert cfg.model == "claude-opus-4-8"  # [1m] suffix stripped
+
+
+def test_anthropic_env_overrides_existing_config_file(tmp_path, monkeypatch):
+    # The real bug: config.json already has a key, so the env token used to be
+    # silently dropped. It must now win (secrets/endpoint come from env).
+    _clear_env(monkeypatch)
+    home = tmp_path / "home"; home.mkdir()
+    (home / "config.json").write_text(json.dumps(
+        {"api_key": "file-key", "protocol": "openai",
+         "api_base_url": "https://api.openai.com/v1", "model": "gpt-4"}))
+    monkeypatch.setenv("CODING_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-xyz")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://gw/anthropic")
+    cfg = AgentConfig.resolve()
+    assert cfg.api_key == "tok-xyz"
+    assert cfg.protocol == "anthropic"
+    assert cfg.extra_headers.get("Authorization") == "Bearer tok-xyz"
