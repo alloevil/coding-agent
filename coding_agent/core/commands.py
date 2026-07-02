@@ -70,6 +70,7 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /hooks       — list configured lifecycle hooks",
         "  /doctor      — run an environment health check (/doctor probe to hit the endpoint)",
         "  /permissions — show or set approval mode (/permissions auto|ask)",
+        "  /vim         — toggle vim modal editing (TUI only)",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -199,6 +200,13 @@ def _cmd_permissions(args: str, ctx: CommandContext) -> CommandResult:
         return CommandResult("print",
                              "Usage: /permissions [auto|ask]  (no arg shows current mode)")
     return CommandResult("action", "permissions:")
+
+
+def _cmd_vim(args: str, ctx: CommandContext) -> CommandResult:
+    # /vim 是 TUI 前端拦截处理的（模态编辑开关），后端收到说明当前不在 TUI。
+    return CommandResult("print",
+                         "Vim modal editing is a TUI feature — launch the full-screen "
+                         "TUI (coding-agent, or --tui) and type /vim to toggle it.")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -347,6 +355,7 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "hooks": _cmd_hooks,
     "doctor": _cmd_doctor,
     "permissions": _cmd_permissions,
+    "vim": _cmd_vim,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
