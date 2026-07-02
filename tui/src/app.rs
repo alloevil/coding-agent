@@ -429,8 +429,10 @@ impl AppState {
                 }
             }
             "tool_call" => {
-                self.status_str = Status::RunningTool.label().into();
                 let name = ev.str_field("name").unwrap_or("?").to_string();
+                // Name the active tool in the status line (Claude Code shows
+                // what it's doing, e.g. "running shell_exec…").
+                self.status_str = format!("running {name}…");
                 // Surface a target (path / command) from the call arguments for
                 // a more informative one-liner (e.g. "file_edit  src/main.py").
                 let target = ev.rest.get("arguments")
@@ -1225,12 +1227,22 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
             chunks[4],
         );
     } else if turn_running {
-        // Codex-style busy row: "⠹ Working  {elapsed}  esc to interrupt", label shimmers.
+        // Codex-style busy row: "⠹ <label>  {elapsed}  esc to interrupt".
+        // Label shimmers; when a tool is running it names the tool.
+        let label = if state.status_str.starts_with("running ") {
+            // "running shell_exec…" → "Running shell_exec"
+            let t = state.status_str.trim_end_matches('…');
+            let mut c = t.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_else(|| "Working".into())
+        } else {
+            "Working".to_string()
+        };
         let mut spans = vec![
             Span::styled(format!(" {} ", crate::render::spinner_frame(state.tick)),
                          Style::default().fg(Color::Cyan)),
         ];
-        spans.extend(crate::render::shimmer_spans("Working", state.tick));
+        spans.extend(crate::render::shimmer_spans(&label, state.tick));
         spans.push(Span::styled(
             format!("  {}  ", crate::render::fmt_elapsed_compact(state.elapsed_secs())),
             Style::default().fg(Color::DarkGray)));
@@ -1342,6 +1354,14 @@ mod tests {
         let joined = rendered(&s).join("\n");
         assert!(joined.contains("file_edit"));
         assert!(joined.contains("src/main.py"));
+    }
+
+    #[test]
+    fn tool_call_sets_named_running_status() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"tool_call\",\"name\":\"shell_exec\",\"arguments\":{}}"));
+        // status names the active tool, not a generic "running tool…"
+        assert_eq!(s.status_str, "running shell_exec…");
     }
 
     #[test]
