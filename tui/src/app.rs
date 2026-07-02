@@ -855,10 +855,20 @@ async fn handle_key(
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
                 (KeyCode::Esc, _) => {
-                    // Interrupt a running turn (relies on concurrent protocol).
+                    // Running: interrupt the turn. Idle: clear the draft input
+                    // (Claude Code behavior); if already empty, jump to tail.
                     if *turn_running {
                         backend.send(&Request::Interrupt).await?;
+                    } else if !composer.is_empty() {
+                        composer.clear(); // discard draft, no history entry
+                    } else {
+                        state.scroll = 0;
                     }
+                }
+                (KeyCode::Char('l'), M::CONTROL) => {
+                    // Ctrl+L: clear the visible transcript (session continues).
+                    state.transcript.clear();
+                    state.scroll = 0;
                 }
                 (KeyCode::Enter, m) if m.contains(M::SHIFT) || m.contains(M::ALT) => {
                     composer.newline(); // multi-line input
