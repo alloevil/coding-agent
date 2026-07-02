@@ -241,6 +241,10 @@ impl AppState {
                 if let Some(t) = ev.str_field("text") {
                     self.transcript.push(Entry::Notice(t.to_string()));
                 }
+                // A slash command's result IS the turn's end — clear the busy
+                // spinner (there's no done/session_state for commands).
+                self.status_str = Status::Idle.label().into();
+                return true;
             }
             "plan" => {
                 // Live plan/todo panel. Steps: [{step, status}].
@@ -1445,9 +1449,12 @@ mod tests {
     }
 
     #[test]
-    fn command_result_shows_as_notice() {
+    fn command_result_shows_as_notice_and_ends_turn() {
         let mut s = AppState::new();
-        s.apply(&ev("{\"type\":\"command_result\",\"text\":\"Current model: claude\"}"));
+        // A slash command result must END the turn (clear the busy spinner) —
+        // there's no done/session_state event for commands.
+        let ended = s.apply(&ev("{\"type\":\"command_result\",\"text\":\"Current model: claude\"}"));
+        assert!(ended, "command_result ends the turn so the spinner stops");
         assert!(rendered(&s).iter().any(|l| l.contains("Current model: claude")));
     }
 
