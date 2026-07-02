@@ -115,11 +115,13 @@ class AgentProtocol:
         return self._question_answer
 
     async def _call_model(self, context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-        """调用模型（流式）。委托给统一 ModelClient；文本增量转为 stream_text 事件。"""
+        """调用模型（流式）。委托给统一 ModelClient；正文增量转为 stream_text 事件，
+        推理增量转为 stream_reasoning 事件（供 TUI 显示思考过程）。"""
         return await self.model_client.complete(
             context,
             tools,
             on_text_delta=lambda chunk: self._send_event("stream_text", {"text": chunk}),
+            on_reasoning_delta=lambda chunk: self._send_event("stream_reasoning", {"text": chunk}),
             stream=True,
         )
     

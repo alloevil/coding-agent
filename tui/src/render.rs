@@ -246,6 +246,42 @@ pub fn shimmer_spans(text: &str, tick: usize) -> Vec<Span<'static>> {
     spans
 }
 
+/// ASCII wordmark for the welcome screen (our own art — not Codex's frames).
+/// Rendered with an animated shimmer sweep, replicating Codex's animated
+/// welcome banner behavior.
+const BANNER: &[&str] = &[
+    r"  ___         _ _                                 _   ",
+    r" / __|___  __| (_)_ _  __ _   __ _ __ _ ___ _ _ | |_ ",
+    r"| (__/ _ \/ _` | | ' \/ _` | / _` / _` / -_) ' \|  _|",
+    r" \___\___/\__,_|_|_||_\__, | \__,_\__, \___|_||_|\__|",
+    r"                      |___/       |___/              ",
+];
+
+/// Render the animated welcome banner (shimmering wordmark + tagline). `tick`
+/// drives the shimmer. Falls back to a compact single line when the terminal is
+/// too narrow (< banner width) — mirrors Codex skipping animation when small.
+pub fn welcome_banner(tick: usize, width: u16) -> Vec<Line<'static>> {
+    let banner_w = BANNER.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+    if width < banner_w + 2 {
+        // Too narrow: compact greeting instead of clipped art.
+        return vec![Line::from(Span::styled(
+            "  coding-agent",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))];
+    }
+    let mut out: Vec<Line<'static>> = vec![Line::from("")];
+    for (row, art) in BANNER.iter().enumerate() {
+        // Offset the shimmer sweep per-row so the wave moves diagonally.
+        out.push(Line::from(shimmer_spans(art, tick + row)));
+    }
+    out.push(Line::from(""));
+    out.push(Line::from(Span::styled(
+        "  your terminal coding agent",
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    )));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +372,20 @@ mod tests {
     #[test]
     fn shimmer_empty_is_empty() {
         assert!(shimmer_spans("", 0).is_empty());
+    }
+
+    #[test]
+    fn welcome_banner_full_width_has_art_and_tagline() {
+        let ls = welcome_banner(0, 80);
+        let joined: String = ls.iter().map(|l| text_of(l)).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("your terminal coding agent"));
+        assert!(ls.len() > 3, "full banner has multiple art rows");
+    }
+
+    #[test]
+    fn welcome_banner_narrow_falls_back_to_compact() {
+        let ls = welcome_banner(0, 20);
+        assert_eq!(ls.len(), 1);
+        assert!(text_of(&ls[0]).contains("coding-agent"));
     }
 }

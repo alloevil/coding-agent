@@ -142,6 +142,9 @@ pub struct AppState {
     pub transcript: Vec<crate::render::Entry>,
     /// In-progress streaming assistant text (flushed to transcript on done).
     pub live: String,
+    /// In-progress streaming reasoning/thinking text (shown dimmed; cleared when
+    /// the answer starts or the turn ends).
+    pub live_reasoning: String,
     pub status_str: String,
     pub model: String,
     pub turn: u64,
@@ -197,11 +200,22 @@ impl AppState {
                     self.turn = t;
                 }
                 self.last_error = None;
+                self.live_reasoning.clear();
+            }
+            "stream_reasoning" => {
+                // Reasoning/thinking tokens (gpt-5/o, DeepSeek reasoning_content).
+                if let Some(t) = ev.str_field("text") {
+                    self.live_reasoning.push_str(t);
+                }
+                self.status_str = Status::Thinking.label().into();
             }
             "stream_text" => {
                 if let Some(t) = ev.str_field("text") {
                     self.live.push_str(t);
                 }
+                // The answer has started — reasoning is done; drop it so it
+                // doesn't linger above the reply.
+                self.live_reasoning.clear();
                 self.status_str = Status::Thinking.label().into();
             }
             "assistant_message" => {
@@ -211,6 +225,7 @@ impl AppState {
                 } else {
                     ev.str_field("content").unwrap_or("").to_string()
                 };
+                self.live_reasoning.clear();
                 if !final_text.is_empty() {
                     self.transcript.push(Entry::Agent(final_text));
                 }
@@ -249,6 +264,7 @@ impl AppState {
                     let t = std::mem::take(&mut self.live);
                     self.transcript.push(Entry::Agent(t));
                 }
+                self.live_reasoning.clear();
                 self.status_str = Status::Idle.label().into();
                 return true;
             }
@@ -260,17 +276,21 @@ impl AppState {
     /// Fully-rendered transcript as styled lines (committed entries + the
     /// in-progress live stream + any trailing error). `busy` shows a thinking
     /// indicator when a turn is running but no text has streamed yet.
-    pub fn render_lines(&self, busy: bool) -> Vec<Line<'static>> {
-        use crate::render::{render_entry, render_markdown, spinner_frame, Entry};
+    pub fn render_lines(&self, busy: bool, width: u16) -> Vec<Line<'static>> {
+        use crate::render::{render_entry, render_markdown, spinner_frame, welcome_banner, Entry};
         let mut out: Vec<Line<'static>> = Vec::new();
         for e in &self.transcript {
             out.extend(render_entry(e));
         }
-        // First-screen suggestions: shown while there's no real conversation yet
-        // (only the welcome notice). Replicates Codex's example prompts.
+        // First-screen: animated ASCII welcome banner + example prompts, shown
+        // while there's no real conversation yet. Replicates Codex's welcome.
         let has_convo = self.transcript.iter()
             .any(|e| matches!(e, Entry::User(_) | Entry::Agent(_)));
         if !has_convo && !busy && self.live.is_empty() {
+            let mut banner = welcome_banner(self.tick, width);
+            // Put the banner at the very top, above the welcome notice line.
+            banner.extend(std::mem::take(&mut out));
+            out = banner;
             out.push(Line::from(""));
             out.push(Line::from(Span::styled("  Try:",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))));
@@ -279,6 +299,18 @@ impl AppState {
                     Span::styled("  › ", Style::default().fg(Color::Cyan)),
                     Span::styled(s.to_string(), Style::default().fg(Color::DarkGray)),
                 ]));
+            }
+        }
+        // Live reasoning (thinking tokens) — shown dimmed/italic under a
+        // "thinking" header while it streams, before the answer text.
+        if !self.live_reasoning.is_empty() && self.live.is_empty() {
+            out.push(Line::from(Span::styled(
+                format!("{} thinking", spinner_frame(self.tick)),
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::DIM | Modifier::BOLD))));
+            for raw in self.live_reasoning.lines() {
+                out.push(Line::from(Span::styled(
+                    format!("  {raw}"),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))));
             }
         }
         if !self.live.is_empty() {
@@ -291,9 +323,8 @@ impl AppState {
                 last.spans.push(Span::raw("▌"));
             }
             out.extend(md);
-        } else if busy {
-            // Thinking: model is working but hasn't streamed text yet. Show an
-            // animated indicator in the transcript so the screen isn't static.
+        } else if busy && self.live_reasoning.is_empty() {
+            // Thinking: model is working but hasn't streamed text/reasoning yet.
             let label = if self.status_str.contains("tool") {
                 self.status_str.clone()
             } else {
@@ -566,7 +597,7 @@ async fn handle_key(
                 (KeyCode::Up, _) => composer.history_prev(),
                 (KeyCode::Down, _) => composer.history_next(),
                 (KeyCode::PageUp, _) => {
-                    let total = state.render_lines(*turn_running).len();
+                    let total = state.render_lines(*turn_running, 80).len();
                     state.scroll_up(10, total, 10); // conservative page; clamps in render
                 }
                 (KeyCode::PageDown, _) => state.scroll_down(10),
@@ -683,7 +714,8 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
     );
 
     // Transcript (honor scroll offset; 0 = follow tail)
-    let lines = state.render_lines(turn_running);
+    let inner_w = chunks[1].width.saturating_sub(2); // minus borders
+    let lines = state.render_lines(turn_running, inner_w);
     let height = chunks[1].height.saturating_sub(2) as usize; // minus borders
     let start = state.view_start(lines.len(), height);
     let end = (start + height).min(lines.len());
@@ -775,7 +807,7 @@ mod tests {
 
     /// All rendered transcript lines flattened to strings.
     fn rendered(s: &AppState) -> Vec<String> {
-        s.render_lines(false).iter().map(line_text).collect()
+        s.render_lines(false, 80).iter().map(line_text).collect()
     }
 
     #[test]
@@ -929,17 +961,35 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_streams_then_clears_when_answer_starts() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"stream_reasoning\",\"text\":\"let me think\"}"));
+        let shown = s.render_lines(true, 80).iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
+            .any(|t| t.contains("let me think"));
+        assert!(shown, "reasoning should be displayed while streaming");
+        // Once answer text starts, reasoning is cleared.
+        s.apply(&ev("{\"type\":\"stream_text\",\"text\":\"the answer\"}"));
+        assert!(s.live_reasoning.is_empty(), "reasoning cleared once answer starts");
+        let after = s.render_lines(true, 80).iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>().join("\n");
+        assert!(after.contains("the answer"));
+        assert!(!after.contains("let me think"));
+    }
+
+    #[test]
     fn busy_shows_thinking_indicator_before_text() {
         let mut s = AppState::new();
         // Turn started (thinking) but nothing streamed yet.
         s.apply(&ev("{\"type\":\"thinking\",\"turn\":1}"));
-        let busy = s.render_lines(true).iter()
+        let busy = s.render_lines(true, 80).iter()
             .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
             .any(|t| t.contains("thinking"));
         assert!(busy, "a thinking indicator should show while busy with no live text");
         // Once text streams, the indicator gives way to the live text.
         s.apply(&ev("{\"type\":\"stream_text\",\"text\":\"hello\"}"));
-        let has_text = s.render_lines(true).iter()
+        let has_text = s.render_lines(true, 80).iter()
             .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>())
             .any(|t| t.contains("hello"));
         assert!(has_text);
