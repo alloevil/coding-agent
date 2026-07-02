@@ -123,14 +123,59 @@ class ContextManager:
         """检查是否需要压缩"""
         estimated_tokens = state.get_token_estimate()
         return estimated_tokens > self.max_tokens * self.compression_threshold
-    
+
+    # microcompact 触发阈值：远早于全量压缩（默认 90%），在 60% 就开始
+    # 悄悄回收旧工具输出，把昂贵的模型总结推迟乃至避免。
+    microcompact_threshold = 0.6
+    # 最近这么多条消息内的工具结果一律不动（可能还要被引用）。
+    MICROCOMPACT_KEEP_RECENT = 8
+    # 短于此的工具结果不值得回收（占位符本身也占字符）。
+    MICROCOMPACT_MIN_LEN = 400
+    _ELIDED = "[tool output elided to save context]"
+
+    def needs_microcompaction(self, state: AgentState) -> bool:
+        """是否该做 microcompact：超过较低阈值即可（比 needs_compaction 早）。"""
+        return state.get_token_estimate() > self.max_tokens * self.microcompact_threshold
+
+    def microcompact(self, state: AgentState) -> int:
+        """
+        Microcompact - 微压缩（学 Claude Code 的做法，纯本地、不调模型）。
+
+        只回收「较旧且已完成」的工具结果：把它们的 content 替换成占位符，
+        保留 assistant 的推理/决策文本和 tool_call 结构（配对不破），也保留
+        最近 MICROCOMPACT_KEEP_RECENT 条。这是外科手术式回收，区别于全量总结
+        那种「一刀切丢掉所有旧历史」。返回回收的消息数。
+
+        幂等：已是占位符的不再动。
+        """
+        msgs = state.messages
+        cutoff = len(msgs) - self.MICROCOMPACT_KEEP_RECENT
+        elided = 0
+        for i, msg in enumerate(msgs):
+            if i >= cutoff:
+                break  # 最近窗口内不动
+            if msg.role != MessageRole.TOOL or not msg.tool_result:
+                continue
+            content = msg.tool_result.content
+            if content == self._ELIDED or len(content) < self.MICROCOMPACT_MIN_LEN:
+                continue
+            msg.tool_result.content = self._ELIDED
+            elided += 1
+        return elided
+
     async def compact(self, state: AgentState, model_call_fn: Any) -> None:
         """
         执行 context 压缩，从便宜到贵：
+        0. Microcompact - 回收旧的已完成工具输出（本地、最便宜）
         1. Snip - 截断过长的工具结果（不丢消息）
         2. Auto-Compact - 用模型总结较旧的历史，保留最近若干轮原文
         3. Budget Reduction - 兜底硬截断（保持 tool 配对完整）
         """
+        # 第 0 层：microcompact（本地回收旧工具输出，往往就够了）
+        self.microcompact(state)
+        if state.get_token_estimate() <= self.max_tokens * 0.8:
+            return
+
         # 第 1 层：先尝试截断超长工具结果（最便宜，不丢消息）
         self._try_snip(state)
         if state.get_token_estimate() <= self.max_tokens * 0.8:

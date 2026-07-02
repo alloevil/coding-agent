@@ -325,14 +325,20 @@ class AgentLoop:
                 )
                 break
             state.increment_turn()
-            
-            # 3. Context assembly
+
+            # 3. Proactive microcompaction: cheaply reclaim old completed tool
+            #    outputs well before the expensive full-compact threshold, so
+            #    context bloat rarely escalates to a model-summary pass.
+            if self.context_manager.needs_microcompaction(state):
+                self.context_manager.microcompact(state)
+
+            # 4. Context assembly
             context = self.context_manager.assemble_context(
-                state, 
+                state,
                 self.config.system_prompt
             )
-            
-            # 4. Pre-model shapers (compaction)
+
+            # 5. Pre-model shapers (full compaction if still over the hard limit)
             if self.context_manager.needs_compaction(state):
                 yield AgentEventData(
                     event=AgentEvent.COMPACTING,
