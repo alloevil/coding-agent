@@ -102,3 +102,28 @@ def test_anthropic_env_overrides_existing_config_file(tmp_path, monkeypatch):
     assert cfg.api_key == "tok-xyz"
     assert cfg.protocol == "anthropic"
     assert cfg.extra_headers.get("Authorization") == "Bearer tok-xyz"
+
+
+def test_anthropic_env_defaults_model_when_unset(tmp_path, monkeypatch):
+    # Token set, no model env, no file model → must not stay the openai-family
+    # default 'gpt-4' on an anthropic gateway; default to claude (matches TUI).
+    _clear_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path / "nope"))
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    cfg = AgentConfig.resolve()
+    assert cfg.protocol == "anthropic"
+    assert cfg.model == "claude-opus-4-8"
+
+
+def test_anthropic_env_keeps_file_model_when_set(tmp_path, monkeypatch):
+    # If config.json names a model and no model env var is set, the file model
+    # must survive (the anthropic default only fills the gap).
+    _clear_env(monkeypatch)
+    home = tmp_path / "home"; home.mkdir()
+    (home / "config.json").write_text(json.dumps({"model": "claude-sonnet-5"}))
+    monkeypatch.setenv("CODING_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok")
+    cfg = AgentConfig.resolve()
+    assert cfg.model == "claude-sonnet-5"

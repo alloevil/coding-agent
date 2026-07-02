@@ -213,7 +213,10 @@ questions directly; for a simple question, a short answer is best.
         if env_cfg.api_key:
             cfg.api_key = env_cfg.api_key
             cfg.api_base_url = env_cfg.api_base_url
-            cfg.model = env_cfg.model
+            # 仅当 env 真的指定了模型（≠ dataclass 默认）才覆盖文件里的模型，
+            # 否则「设了 token 但没设 model」会把文件模型冲成默认。
+            if env_cfg.model != cls().model:
+                cfg.model = env_cfg.model
             # Anthropic env 路径还带 protocol + Authorization 头，一并生效，
             # 否则 config.json 已有 key 时这些会被静默丢弃。
             if env_cfg.protocol and env_cfg.protocol != cls().protocol:
@@ -222,6 +225,10 @@ questions directly; for a simple question, a short answer is best.
                 merged = dict(cfg.extra_headers or {})
                 merged.update(env_cfg.extra_headers)
                 cfg.extra_headers = merged
+            # anthropic 网关但模型还是 openai 系默认 → 用 Anthropic 默认模型
+            # （与 Rust TUI main.rs 一致），避免拿 `gpt-4` 打 anthropic 端点。
+            if cfg.protocol == "anthropic" and cfg.model == cls().model:
+                cfg.model = "claude-opus-4-8"
         return cfg
 
     def save(self, path: str) -> None:
