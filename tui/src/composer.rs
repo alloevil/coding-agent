@@ -7,7 +7,8 @@
 /// Known slash commands, for Tab completion. Mirrors core/commands.py BUILTINS.
 pub const SLASH_COMMANDS: &[&str] = &[
     "help", "tools", "cost", "compact", "plan", "plan-mode", "agents", "agent",
-    "model", "status", "clear", "new", "sessions", "init", "quit", "exit",
+    "model", "status", "config", "setup", "clear", "new", "sessions", "init",
+    "quit", "exit",
 ];
 
 /// A single-line editable input buffer with a cursor.
@@ -377,6 +378,22 @@ mod tests {
         c.insert_str("hello");
         assert!(!c.complete_slash());
         assert_eq!(c.text(), "hello");
+    }
+
+    #[test]
+    fn slash_candidates_lists_all_for_bare_slash() {
+        let mut c = Composer::new();
+        c.insert_str("/");
+        // bare "/" should surface the full command list (hint that / exists)
+        assert!(c.slash_candidates().len() >= 3);
+    }
+
+    #[test]
+    fn slash_candidates_single_match_for_unique_prefix() {
+        let mut c = Composer::new();
+        c.insert_str("/hel"); // only "/help"
+        let cands = c.slash_candidates();
+        assert_eq!(cands, vec!["help"]);
     }
 
     #[test]
