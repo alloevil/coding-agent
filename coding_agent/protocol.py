@@ -479,6 +479,14 @@ class AgentProtocol:
                     lines.append(f"  • {event}: {n} command(s)")
                 text = "\n".join(lines)
             self._send_event("command_result", {"text": text})
+        elif action == "doctor" or action == "doctor:probe":
+            # /doctor：环境自检（静态）；/doctor probe 额外真实探测端点。
+            from .core import doctor as D
+            if action == "doctor:probe":
+                report = await D.run_full(self.config)
+            else:
+                report = D.run_static(self.config)
+            self._send_event("command_result", {"text": report.render()})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})

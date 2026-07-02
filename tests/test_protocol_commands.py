@@ -245,3 +245,36 @@ def test_hooks_lists_configured(monkeypatch):
         text = next(d["text"] for t, d in proto._events if t == "command_result")
         assert "pre_tool_use" in text and "2 command" in text
     asyncio.run(main())
+
+
+def test_doctor_static_renders_report(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        # doctor reads these off config; give it a healthy-ish shape
+        proto.config.api_key = "sk-test"
+        proto.config.model = "claude-opus-4-8"
+        proto.config.api_base_url = "http://x/v1"
+        proto.config.protocol = "anthropic"
+        proto.config.extra_headers = {"Authorization": "Bearer x"}
+        await proto._handle_command_action("doctor")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        # the rendered report has the doctor banner + a tally line
+        assert "doctor" in text.lower()
+        assert "ok" in text.lower()
+        # a bracketed-suffix model would be flagged; a clean one must not be
+        assert "illegal suffix" not in text
+    asyncio.run(main())
+
+
+def test_doctor_flags_bracket_model(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.api_key = "sk-test"
+        proto.config.model = "claude-opus-4-8[1m]"
+        proto.config.api_base_url = "http://x/v1"
+        proto.config.protocol = "anthropic"
+        proto.config.extra_headers = {}
+        await proto._handle_command_action("doctor")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "suffix" in text.lower()  # the [1m] marker is called out
+    asyncio.run(main())

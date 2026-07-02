@@ -61,6 +61,11 @@ def test_undo_mcp_hooks_actions():
     assert dispatch("/hooks", _ctx()).payload == "hooks"
 
 
+def test_doctor_action_and_probe():
+    assert dispatch("/doctor", _ctx()).payload == "doctor"
+    assert dispatch("/doctor probe", _ctx()).payload == "doctor:probe"
+
+
 def test_tools_lists_registered():
     r = dispatch("/tools", _ctx())
     assert r.kind == "print"
