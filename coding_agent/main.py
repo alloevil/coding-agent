@@ -241,6 +241,40 @@ class CodingAgent:
             else:
                 print("   Please enter y, n, or a")
     
+    async def run_print(self, prompt: str) -> int:
+        """
+        Headless 一次性模式（Claude Code 的 -p/--print）：跑一轮 agent（含工具），
+        只把最终回复打到 stdout，返回退出码（0 成功 / 1 出错）。
+
+        适合管道/CI：无横幅、无流式装饰；工具进度走 stderr。
+        """
+        import sys as _sys
+        # 静默会话初始化（不打招呼横幅）
+        self.state = AgentState(session_id=self.session_store.create_session())
+        self.plan_tool.bind_state(self.state)
+        self.model_client.prompt_cache_key = self.state.session_id
+        self.state.metadata["model"] = self.config.model
+        # 流式增量不打 stdout（stdout 只留最终答案）
+        self.on_text_delta = lambda _chunk: None
+        self.on_reasoning_delta = lambda _chunk: None
+
+        final: list[str] = []
+        had_error = False
+        async for event in self.agent_loop.run(self.state, prompt):
+            if event.event == AgentEvent.ASSISTANT_MESSAGE:
+                content = event.data.get("content", "")
+                if content:
+                    final.append(content)
+            elif event.event == AgentEvent.TOOL_CALL:
+                name = event.data.get("name", "?")
+                print(f"[tool] {name}", file=_sys.stderr)
+            elif event.event == AgentEvent.ERROR:
+                print(f"error: {event.data.get('error', '')}", file=_sys.stderr)
+                had_error = True
+        if final:
+            print(final[-1])
+        return 1 if (had_error and not final) else 0
+
     async def start(self, session_id: str | None = None) -> None:
         """启动 Agent"""
         # 连接已配置的 MCP servers（失败降级，不阻塞启动）
@@ -623,9 +657,14 @@ def _parse_args(argv: list[str]) -> dict[str, Any]:
                    metavar="KEY=VALUE",
                    help="Override a config value for this run only "
                         "(e.g. -c model=gpt-4o -c protocol=anthropic). Not persisted.")
+    p.add_argument("-p", "--print", dest="print_prompt", default=None,
+                   metavar="PROMPT",
+                   help="Headless one-shot: run PROMPT (with tools), print the final "
+                        "reply to stdout, exit. Pipe-friendly; progress on stderr.")
     args = p.parse_args(argv)
     return {"resume": args.resume, "list_sessions": args.list_sessions,
-            "tui": args.tui, "setup": args.setup, "overrides": args.overrides}
+            "tui": args.tui, "setup": args.setup, "overrides": args.overrides,
+            "print": args.print_prompt}
 
 
 _CONFIG_USAGE = """Usage:
@@ -796,6 +835,13 @@ async def main(argv: list[str] | None = None) -> None:
 
     # 启动前校验：配错了明确提示（protocol/base_url/model/key），不静默失败。
     _warn_if_invalid(config)
+
+    # -p/--print headless 一次性模式：跑一轮、打印最终回复、退出。
+    # 非交互（管道/CI）友好：跳过 trust 询问，走已配置的权限策略。
+    if opts.get("print"):
+        agent = CodingAgent(config)
+        code = await agent.run_print(opts["print"])
+        sys.exit(code)
 
     # trust directory：首次在此目录运行 → 询问是否信任。拒绝/未答 → 守卫写与执行
     # （即使 auto_approve，写/执行仍逐次确认）。CLI 交互路径；TUI 走自己的 onboarding。

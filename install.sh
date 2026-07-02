@@ -147,8 +147,13 @@ export CODING_AGENT_PYTHON="$INSTALL_DIR/.venv/bin/python"
 export CODING_AGENT_DIR="$INSTALL_DIR"
 TUI="$INSTALL_DIR/tui/target/release/coding-agent-tui"
 # Rust TUI is the default when built AND we're on an interactive terminal.
-# Not a TTY (piped / non-interactive) or --cli → the Python CLI.
-if [ -x "\$TUI" ] && [ "\${1:-}" != "--cli" ] && [ -t 0 ] && [ -t 1 ]; then
+# Not a TTY (piped / non-interactive), --cli, or CLI-only flags (-p/--print,
+# config/doctor/update subcommands) → the Python CLI.
+CLI_ONLY=0
+case "\${1:-}" in
+  --cli|-p|--print|config|doctor|update) CLI_ONLY=1 ;;
+esac
+if [ -x "\$TUI" ] && [ "\$CLI_ONLY" = "0" ] && [ -t 0 ] && [ -t 1 ]; then
   exec "\$TUI" "\$@"
 else
   [ "\${1:-}" = "--cli" ] && shift
