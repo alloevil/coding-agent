@@ -163,6 +163,56 @@ class ContextManager:
             elided += 1
         return elided
 
+    # file_read 结果占位符（同文件更晚一次读取已取代它）。
+    _SUPERSEDED = "[earlier read of {path} — superseded by a later read]"
+
+    def dedup_file_reads(self, state: AgentState) -> int:
+        """
+        工具结果语义去重：同一文件被 file_read 多次时，只留最新一次的内容，
+        更早的替换成占位符——旧内容大概率已过期或与新读重复，白占 context。
+
+        通过 assistant.tool_calls 的 id→(name, path) 映射把 tool_result 关联回
+        它的调用。保留最近 MICROCOMPACT_KEEP_RECENT 条不动。纯本地、幂等。
+        返回被取代的读取数。
+        """
+        # 1) 建 tool_call_id -> path（仅 file_read）
+        id_to_path: dict[str, str] = {}
+        for msg in state.messages:
+            if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.name == "file_read":
+                        p = tc.arguments.get("path") or tc.arguments.get("file_path")
+                        if p:
+                            id_to_path[tc.id] = str(p)
+        if not id_to_path:
+            return 0
+
+        # 2) 每个 path 的最后一次读取索引（保留它，取代更早的）
+        cutoff = len(state.messages) - self.MICROCOMPACT_KEEP_RECENT
+        last_idx: dict[str, int] = {}
+        for i, msg in enumerate(state.messages):
+            if msg.role == MessageRole.TOOL and msg.tool_result:
+                path = id_to_path.get(msg.tool_result.tool_call_id)
+                if path:
+                    last_idx[path] = i
+
+        # 3) 取代更早的（不动最近窗口、不动占位符、不动每个 path 的最后一次）
+        superseded = 0
+        for i, msg in enumerate(state.messages):
+            if i >= cutoff:
+                break
+            if msg.role != MessageRole.TOOL or not msg.tool_result:
+                continue
+            path = id_to_path.get(msg.tool_result.tool_call_id)
+            if not path or last_idx.get(path) == i:
+                continue
+            c = msg.tool_result.content
+            if c == self._ELIDED or c.startswith("[earlier read of "):
+                continue
+            msg.tool_result.content = self._SUPERSEDED.format(path=path)
+            superseded += 1
+        return superseded
+
     async def compact(self, state: AgentState, model_call_fn: Any) -> None:
         """
         执行 context 压缩，从便宜到贵：
@@ -171,7 +221,8 @@ class ContextManager:
         2. Auto-Compact - 用模型总结较旧的历史，保留最近若干轮原文
         3. Budget Reduction - 兜底硬截断（保持 tool 配对完整）
         """
-        # 第 0 层：microcompact（本地回收旧工具输出，往往就够了）
+        # 第 0 层：microcompact（本地回收旧工具输出 + 同文件重复读去重）
+        self.dedup_file_reads(state)
         self.microcompact(state)
         if state.get_token_estimate() <= self.max_tokens * 0.8:
             return
