@@ -43,3 +43,21 @@ def test_get_context_for_agent_renders_recent_knowledge(tmp_path):
     out = mgr.get_context_for_agent()
     assert "fact number 0" in out and "fact number 2" in out
     assert "Recent Project Knowledge" in out
+
+
+def test_context_caps_long_project_md(tmp_path):
+    mgr = ProjectMemoryManager(str(tmp_path))
+    mgr.init_project("demo")
+    mgr.write_project_md("A" * 10000)  # 10KB
+    out = mgr.get_context_for_agent()
+    assert "PROJECT.md truncated" in out
+    assert len(out) < 6000, "injected block is bounded even for a huge PROJECT.md"
+
+
+def test_context_caps_long_knowledge_entry(tmp_path):
+    mgr = ProjectMemoryManager(str(tmp_path))
+    mgr.save_knowledge("X" * 3000, tags=["big"])  # one very long entry
+    out = mgr.get_context_for_agent()
+    # entry truncated to ~500 chars (+ ellipsis + tag), not the full 3000
+    assert "X" * 501 not in out
+    assert "…" in out
