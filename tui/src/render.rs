@@ -199,6 +199,53 @@ pub fn spinner_frame(tick: usize) -> &'static str {
     SPINNER[tick % SPINNER.len()]
 }
 
+/// Compact elapsed formatting, matching Codex's fmt_elapsed_compact:
+/// `<60s → "Ns"`, `<1h → "MmSs"`, else `"HhMm"`.
+pub fn fmt_elapsed_compact(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// Shimmer text — a cosine highlight band sweeping across the characters,
+/// replicating Codex's shimmer_spans (RGB-blended base↔highlight). `tick`
+/// (bumped ~every 100ms) drives the sweep so the band moves left→right.
+pub fn shimmer_spans(text: &str, tick: usize) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let padding = 10isize;
+    let period = chars.len() as isize + padding * 2;
+    // ~2s sweep at 100ms/tick → 20 ticks per sweep.
+    let pos = ((tick as isize) % 20) * period / 20;
+    let band_half = 5.0f32;
+    // base grey → highlight near-white
+    let base = (128u8, 128u8, 128u8);
+    let hi = (235u8, 235u8, 235u8);
+    let mut spans = Vec::with_capacity(chars.len());
+    for (i, ch) in chars.iter().enumerate() {
+        let i_pos = i as isize + padding;
+        let dist = (i_pos - pos).abs() as f32;
+        let t = if dist <= band_half {
+            0.5 * (1.0 + (std::f32::consts::PI * (dist / band_half)).cos())
+        } else {
+            0.0
+        };
+        let blend = |a: u8, b: u8| -> u8 {
+            (a as f32 + (b as f32 - a as f32) * (t * 0.9)).round() as u8
+        };
+        let (r, g, b) = (blend(base.0, hi.0), blend(base.1, hi.1), blend(base.2, hi.2));
+        spans.push(Span::styled(ch.to_string(),
+            Style::default().fg(Color::Rgb(r, g, b)).add_modifier(Modifier::BOLD)));
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +315,26 @@ mod tests {
         assert_eq!(spinner_frame(0), "⠋");
         assert_eq!(spinner_frame(10), "⠋");
         assert_ne!(spinner_frame(0), spinner_frame(1));
+    }
+
+    #[test]
+    fn elapsed_compact_formats() {
+        assert_eq!(fmt_elapsed_compact(5), "5s");
+        assert_eq!(fmt_elapsed_compact(59), "59s");
+        assert_eq!(fmt_elapsed_compact(75), "1m15s");
+        assert_eq!(fmt_elapsed_compact(3661), "1h01m");
+    }
+
+    #[test]
+    fn shimmer_preserves_text_and_char_count() {
+        let spans = shimmer_spans("Working", 3);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "Working");
+        assert_eq!(spans.len(), "Working".chars().count());
+    }
+
+    #[test]
+    fn shimmer_empty_is_empty() {
+        assert!(shimmer_spans("", 0).is_empty());
     }
 }

@@ -99,6 +99,17 @@ pub(crate) fn dbg_log(msg: &str) {
     }
 }
 
+/// Example prompts shown on the empty first screen (replicates Codex's
+/// PLACEHOLDERS). Guides new users toward useful tasks.
+pub const SUGGESTIONS: [&str; 6] = [
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Write tests for <file>",
+    "Find and fix a bug in <file>",
+    "Run the test suite and fix failures",
+    "Use /help to list commands",
+];
+
 /// Whether the agent is idle (accepting input) or busy (running a turn).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -142,6 +153,9 @@ pub struct AppState {
     pub needs_setup: bool,
     /// Animation tick for the busy spinner (bumped on each redraw while busy).
     pub tick: usize,
+    /// Tick value captured when the current turn started, for elapsed display.
+    /// The loop ticks ~10/sec while busy, so (tick - busy_start_tick)/10 ≈ secs.
+    pub busy_start_tick: usize,
 }
 
 impl AppState {
@@ -247,10 +261,25 @@ impl AppState {
     /// in-progress live stream + any trailing error). `busy` shows a thinking
     /// indicator when a turn is running but no text has streamed yet.
     pub fn render_lines(&self, busy: bool) -> Vec<Line<'static>> {
-        use crate::render::{render_entry, render_markdown, spinner_frame};
+        use crate::render::{render_entry, render_markdown, spinner_frame, Entry};
         let mut out: Vec<Line<'static>> = Vec::new();
         for e in &self.transcript {
             out.extend(render_entry(e));
+        }
+        // First-screen suggestions: shown while there's no real conversation yet
+        // (only the welcome notice). Replicates Codex's example prompts.
+        let has_convo = self.transcript.iter()
+            .any(|e| matches!(e, Entry::User(_) | Entry::Agent(_)));
+        if !has_convo && !busy && self.live.is_empty() {
+            out.push(Line::from(""));
+            out.push(Line::from(Span::styled("  Try:",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))));
+            for s in SUGGESTIONS {
+                out.push(Line::from(vec![
+                    Span::styled("  › ", Style::default().fg(Color::Cyan)),
+                    Span::styled(s.to_string(), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
         }
         if !self.live.is_empty() {
             // Live streaming agent text with a cursor.
@@ -280,6 +309,11 @@ impl AppState {
                 format!("❌ {e}"), Style::default().fg(Color::Red))));
         }
         out
+    }
+
+    /// Seconds elapsed in the current turn (derived from the 10 Hz busy tick).
+    pub fn elapsed_secs(&self) -> u64 {
+        (self.tick.saturating_sub(self.busy_start_tick) / 10) as u64
     }
 
     /// Scroll up by n lines (toward older). total = total lines, view = visible rows.
@@ -522,6 +556,7 @@ async fn handle_key(
                         if !text.trim().is_empty() {
                             state.push_user(&text);
                             state.scroll = 0; // follow tail on new input
+                            state.busy_start_tick = state.tick; // start elapsed clock
                             backend.send(&Request::UserInput { content: text, session_id: None }).await?;
                             *turn_running = true;
                         }
@@ -665,11 +700,19 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         chunks[1],
     );
 
-    // Input box (multi-line aware)
+    // Input box (multi-line aware). Empty + idle → dim-italic placeholder.
     let prompt = if turn_running { "(running — Esc to stop) " } else { "› " };
-    let input_text = format!("{prompt}{}", composer.text());
+    let input_para = if composer.text().is_empty() && !turn_running {
+        Paragraph::new(Line::from(vec![
+            Span::raw(prompt),
+            Span::styled("Ask coding-agent to do anything",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+        ]))
+    } else {
+        Paragraph::new(format!("{prompt}{}", composer.text()))
+    };
     f.render_widget(
-        Paragraph::new(input_text)
+        input_para
             .block(Block::default().borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
         chunks[2],
@@ -687,22 +730,24 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
                 .style(Style::default().fg(Color::Cyan)),
             chunks[3],
         );
+    } else if turn_running {
+        // Codex-style busy row: "⠹ Working  {elapsed}  esc to interrupt", label shimmers.
+        let mut spans = vec![
+            Span::styled(format!(" {} ", crate::render::spinner_frame(state.tick)),
+                         Style::default().fg(Color::Cyan)),
+        ];
+        spans.extend(crate::render::shimmer_spans("Working", state.tick));
+        spans.push(Span::styled(
+            format!("  {}  ", crate::render::fmt_elapsed_compact(state.elapsed_secs())),
+            Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("esc to interrupt", Style::default().fg(Color::DarkGray)));
+        f.render_widget(Paragraph::new(Line::from(spans)), chunks[3]);
     } else {
-        // Left: status (with spinner when busy). Right: context-aware key hints.
-        let busy = turn_running;
-        let status_span = if busy {
-            Span::styled(
-                format!(" {} {} ", crate::render::spinner_frame(state.tick), state.status_str),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled(format!(" [{}] ", state.status_str),
-                         Style::default().fg(Color::DarkGray))
-        };
+        // Idle: status + context-aware key hints.
+        let status_span = Span::styled(format!(" [{}] ", state.status_str),
+                                       Style::default().fg(Color::DarkGray));
         let hint = if state.scroll > 0 {
             "PgUp/PgDn scroll · End follow · ⏎ send"
-        } else if busy {
-            "esc stop · ⌃C quit"
         } else {
             "⏎ send · ⇧⏎ newline · / commands · ↑↓ history · ⌃C quit"
         };
@@ -859,6 +904,28 @@ mod tests {
         assert!(joined.contains("Welcome"), "entry screen should greet the user");
         assert!(joined.to_lowercase().contains("command"),
                 "welcome should mention slash commands");
+    }
+
+    #[test]
+    fn empty_screen_shows_suggestions_then_hides_after_message() {
+        let mut s = AppState::new();
+        // Fresh: suggestions visible.
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("Explain this codebase"), "empty screen shows suggestions");
+        assert!(joined.contains("Try:"));
+        // After a user message, suggestions disappear.
+        s.push_user("do the thing");
+        let joined2 = rendered(&s).join("\n");
+        assert!(!joined2.contains("Explain this codebase"),
+                "suggestions hidden once a conversation starts");
+    }
+
+    #[test]
+    fn elapsed_secs_from_ticks() {
+        let mut s = AppState::new();
+        s.busy_start_tick = 5;
+        s.tick = 35; // 30 ticks @ 10Hz = 3s
+        assert_eq!(s.elapsed_secs(), 3);
     }
 
     #[test]
