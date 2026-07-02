@@ -569,9 +569,51 @@ class AgentProtocol:
                 self._send_event("command_result", {
                     "text": "Editing config from the TUI isn't supported — use "
                             "/setup to reconfigure, or `coding-agent config set <k> <v>`."})
+        elif action.startswith("agent:"):
+            # /agent <name>：切换活动 agent profile（prompt/model/工具过滤）。
+            name = action.split(":", 1)[1].strip()
+            self._switch_agent_profile(name)
         else:
-            # 其它 action（agents/agent/setup...）：给一个可读回执。
+            # 其它 action（setup...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
+
+    def _switch_agent_profile(self, name: str) -> None:
+        """切换当前会话的活动 agent profile（对齐 CLI._switch_agent）。"""
+        from .core.agent_profiles import load_agent
+        profile = load_agent(name)
+        if profile is None:
+            self._send_event("command_result", {
+                "text": f"Agent '{name}' not found. See /agents. "
+                        f"Define one at .coding-agent/agents/{name}.md"})
+            return
+        if profile.system_prompt:
+            self.agent_loop.config.system_prompt = profile.system_prompt
+        if profile.model:
+            self.config.model = profile.model
+            self.model_client.model = profile.model
+        if profile.temperature is not None:
+            self.model_client.temperature = profile.temperature
+        if profile.allow_tools or profile.deny_tools:
+            self.agent_loop.set_tool_filter(profile.tool_allowed)
+        else:
+            self.agent_loop.set_tool_filter(None)
+        prev = (self.state.metadata or {}).get("active_agent") if self.state else None
+        if self.state:
+            self.state.metadata["active_agent"] = name
+            self.state.metadata["prev_agent"] = prev
+            from .core.agent_handoff import should_handoff, build_switch_note
+            in_plan_mode = getattr(
+                getattr(self.agent_loop, "permission_policy", None), "plan_mode", False)
+            if should_handoff(prev, in_plan_mode, name, in_plan_mode):
+                had_plan = bool((self.state.metadata or {}).get("plan"))
+                self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
+        # 模型可能已换 → 同步 header
+        if profile.model:
+            self._send_event("model_changed", {"model": profile.model})
+        self._send_event("command_result", {
+            "text": f"🧩 Switched to agent '{name}'"
+                    + (f" ({profile.model})" if profile.model else "")
+                    + (f" — {profile.description}" if profile.description else "")})
 
     def _handle_export(self, path_arg: str) -> None:
         """把当前会话转写导出为 markdown。默认写到 cwd 下带会话 id 的文件。"""
