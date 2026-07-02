@@ -148,6 +148,37 @@ impl Composer {
         SLASH_COMMANDS.iter().copied().filter(|c| c.starts_with(typed)).collect()
     }
 
+    /// The in-progress `@file` token at the cursor, if any: the text after the
+    /// most recent `@` (which must be at start or preceded by whitespace) up to
+    /// the cursor, when it's a bare token. Drives the @file completion popup.
+    pub fn at_token(&self) -> Option<String> {
+        let upto: String = self.buf[..self.cursor].iter().collect();
+        let at = upto.rfind('@')?;
+        if at > 0 {
+            if let Some(c) = upto[..at].chars().next_back() {
+                if !c.is_whitespace() { return None; }
+            }
+        }
+        let token = &upto[at + 1..];
+        if token.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(token.to_string())
+    }
+
+    /// Replace the in-progress `@token` at the cursor with `@path ` (completed).
+    pub fn complete_at(&mut self, path: &str) {
+        let upto: String = self.buf[..self.cursor].iter().collect();
+        if let Some(at) = upto.rfind('@') {
+            let head = upto[..at].to_string();
+            let rest: String = self.buf[self.cursor..].iter().collect();
+            let new = format!("{head}@{path} {rest}");
+            let new_cursor = head.chars().count() + 1 + path.chars().count() + 1;
+            self.set_text(&new);
+            self.cursor = new_cursor.min(self.buf.len());
+        }
+    }
+
     /// Take the current text and clear the buffer (on submit). Records the
     /// text into history (skipping empties and exact-duplicate of last entry).
     pub fn take(&mut self) -> String {
@@ -394,6 +425,32 @@ mod tests {
         c.insert_str("/hel"); // only "/help"
         let cands = c.slash_candidates();
         assert_eq!(cands, vec!["help"]);
+    }
+
+    #[test]
+    fn at_token_detects_mention() {
+        let mut c = Composer::new();
+        c.insert_str("look at @src/ma");
+        assert_eq!(c.at_token().as_deref(), Some("src/ma"));
+    }
+
+    #[test]
+    fn at_token_none_without_at_or_after_space() {
+        let mut c = Composer::new();
+        c.insert_str("hello world");
+        assert!(c.at_token().is_none());
+        // an email-like "a@b" (not preceded by space) is not a mention
+        let mut c2 = Composer::new();
+        c2.insert_str("user@host");
+        assert!(c2.at_token().is_none());
+    }
+
+    #[test]
+    fn complete_at_replaces_token_with_path() {
+        let mut c = Composer::new();
+        c.insert_str("edit @ma");
+        c.complete_at("src/main.rs");
+        assert_eq!(c.text(), "edit @src/main.rs ");
     }
 
     #[test]
