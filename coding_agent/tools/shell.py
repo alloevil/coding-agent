@@ -60,6 +60,12 @@ class ShellExecTool(Tool):
                 "timeout": {
                     "type": "integer",
                     "description": "Timeout in seconds (default: 30, max from sandbox config)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run without waiting: returns a job id immediately "
+                                   "(query with job_status). Use for long-running commands "
+                                   "like dev servers or watchers that would otherwise block."
                 }
             },
             "required": ["command"]
@@ -73,6 +79,7 @@ class ShellExecTool(Tool):
         command = kwargs.get("command")
         workdir = kwargs.get("workdir")
         timeout = kwargs.get("timeout")
+        background = bool(kwargs.get("background", False))
 
         if not command:
             raise ToolExecutionError(self.name, "command is required")
@@ -80,6 +87,21 @@ class ShellExecTool(Tool):
         # 决定本次执行的工作目录：显式 workdir 优先，否则用持久化的 _cwd
         from pathlib import Path
         effective_cwd = workdir or self._cwd
+
+        # 后台执行：交给 JobRegistry，立刻返回 job id（不阻塞 agent）。
+        # 长任务（dev server / watcher）用它，避免冻结循环；结果用 job_status 查。
+        if background:
+            from ..core.jobs import get_job_registry
+            reg = get_job_registry()
+            cmd = command
+            cwd = effective_cwd
+            sandbox = self.sandbox
+            job_id = reg.start(
+                lambda: sandbox.run(cmd, workdir=cwd, timeout=timeout),
+                label=f"shell: {command[:40]}",
+            )
+            return (f"Started background job {job_id} — `{command}`.\n"
+                    f"Check it with job_status(job_id=\"{job_id}\").")
 
         # Auto-install dependencies if requirements.txt exists
         cmd_parts = command.strip().split()
