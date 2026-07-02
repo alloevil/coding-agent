@@ -47,7 +47,8 @@ pub enum Request {
     PermissionResponse { approved: bool },
     /// Answer a pending ask_user question.
     QuestionResponse { answer: String },
-    /// Start a fresh session.
+    /// Start a fresh session. (Reserved: /new currently dispatches server-side.)
+    #[allow(dead_code)]
     NewSession,
     /// List recent sessions.
     ListSessions,

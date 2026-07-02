@@ -29,8 +29,8 @@ use crate::setup::{Step, Wizard, PROVIDERS};
 /// Resolve the debug-log path from CODING_AGENT_DEBUG.
 ///
 /// - unset / "0" / "false"  → disabled (None)
-/// - "1" / "true" / "on"    → default file in the state dir
-///                            ($XDG_STATE_HOME|~/.local/state)/coding-agent/tui.log
+/// - "1" / "true" / "on"    → default file: state-dir/tui.log
+///   ($XDG_STATE_HOME or ~/.local/state)/coding-agent/tui.log
 /// - anything else          → treated as an explicit file path
 ///
 /// This fixes the old footgun where `CODING_AGENT_DEBUG=1` created a file
@@ -112,7 +112,11 @@ pub const SUGGESTIONS: [&str; 6] = [
 ];
 
 /// Whether the agent is idle (accepting input) or busy (running a turn).
+/// Some variants/methods are part of the status vocabulary but not all are
+/// constructed now that tool status is a dynamic string — kept for the label
+/// map and future use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Status {
     Idle,
     Thinking,
@@ -131,6 +135,7 @@ impl Status {
             Status::Error => "error",
         }
     }
+    #[allow(dead_code)]
     pub fn is_busy(&self) -> bool {
         matches!(self, Status::Thinking | Status::RunningTool)
     }
@@ -193,8 +198,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let mut s = AppState::default();
-        s.status_str = "ready".into();
+        let mut s = AppState {
+            status_str: "ready".into(),
+            ..Default::default()
+        };
         // Welcome / getting-started notice so the transcript isn't blank on entry.
         s.transcript.push(crate::render::Entry::Notice(
             "👋 Welcome to coding-agent. Type a task and press Enter. \
