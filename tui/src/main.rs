@@ -80,7 +80,9 @@ async fn main() -> std::io::Result<()> {
             api_key,
             model,
             api_base_url: base_url,
-            auto_approve: true,
+            // Don't override the backend's configured auto_approve (config.json /
+            // trust). Interactive approval is the TUI's job now (y/n/a prompt).
+            auto_approve: None,
             protocol,
             extra_headers,
         })
