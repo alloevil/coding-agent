@@ -184,6 +184,11 @@ pub struct AppState {
     pub session_picker: Option<(Vec<(String, String)>, usize)>,
     /// Current permission mode (Shift+Tab toggles; mirrors backend config).
     pub auto_approve: bool,
+    /// True right after an idle Esc with empty input — the next Esc rewinds
+    /// (Esc-Esc). Reset by any other key.
+    pub esc_armed: bool,
+    /// Text returned by a rewind: the run loop moves it into the composer.
+    pub rewound_text: Option<String>,
 }
 
 impl AppState {
@@ -287,6 +292,22 @@ impl AppState {
                 self.transcript.push(Entry::Notice(text));
                 self.pending_question = Some((q, opts));
                 self.status_str = "awaiting answer".into();
+            }
+            "rewound" => {
+                // Esc-Esc rewind: backend popped the last turn. Mirror it in the
+                // transcript (drop entries back through the last User entry) and
+                // stage the original text for the composer.
+                let text = ev.str_field("text").unwrap_or("").to_string();
+                if !text.is_empty() {
+                    if let Some(pos) = self.transcript.iter()
+                        .rposition(|e| matches!(e, Entry::User(_))) {
+                        self.transcript.truncate(pos);
+                    }
+                    self.turn = self.turn.saturating_sub(1);
+                    self.rewound_text = Some(text);
+                    self.transcript.push(Entry::Notice(
+                        "⎌ Rewound last turn — edit and resend.".into()));
+                }
             }
             "sessions_list" => {
                 // --continue: adopt the most recent session (list is sorted by
@@ -670,6 +691,11 @@ async fn run_loop(
                         if ended {
                             *turn_running = false;
                         }
+                        // Rewind: move the popped user text into the composer.
+                        if let Some(t) = state.rewound_text.take() {
+                            composer.clear();
+                            composer.insert_str(&t);
+                        }
                         // Open the wizard when the backend asks for setup.
                         if state.needs_setup && wizard.is_none() {
                             dbg_log("-> opening wizard (needs_setup && wizard none)");
@@ -867,16 +893,25 @@ async fn handle_key(
                 }
                 return Ok(());
             }
+            // Any key other than Esc disarms the pending Esc-Esc rewind.
+            if !matches!(k.code, KeyCode::Esc) {
+                state.esc_armed = false;
+            }
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), M::CONTROL) => state.should_quit = true,
                 (KeyCode::Esc, _) => {
-                    // Running: interrupt the turn. Idle: clear the draft input
-                    // (Claude Code behavior); if already empty, jump to tail.
+                    // Running: interrupt. Idle+draft: clear draft. Idle+empty:
+                    // first Esc arms, second Esc (Esc-Esc) rewinds the last turn.
                     if *turn_running {
                         backend.send(&Request::Interrupt).await?;
                     } else if !composer.is_empty() {
                         composer.clear(); // discard draft, no history entry
+                        state.esc_armed = false;
+                    } else if state.esc_armed {
+                        state.esc_armed = false;
+                        backend.send(&Request::Rewind).await?;
                     } else {
+                        state.esc_armed = true;
                         state.scroll = 0;
                     }
                 }
@@ -1459,6 +1494,29 @@ mod tests {
         s.apply(&ev("{\"type\":\"session_state\",\"prompt_tokens\":1000,\"completion_tokens\":500,\"max_context_tokens\":200000}"));
         assert_eq!(s.used_tokens, 1500);
         assert_eq!(s.max_context, 200000);
+    }
+
+    #[test]
+    fn rewound_event_truncates_transcript_and_stages_text() {
+        let mut s = AppState::new();
+        s.push_user("first ask");
+        s.transcript.push(crate::render::Entry::Agent("answer".into()));
+        s.turn = 1;
+        s.apply(&ev("{\"type\":\"rewound\",\"text\":\"first ask\"}"));
+        // user+agent entries removed, notice added, text staged
+        assert!(s.transcript.iter().all(|e| !matches!(e, crate::render::Entry::Agent(_))));
+        assert_eq!(s.rewound_text.as_deref(), Some("first ask"));
+        assert_eq!(s.turn, 0);
+        assert!(rendered(&s).join("\n").contains("Rewound"));
+    }
+
+    #[test]
+    fn rewound_empty_text_is_noop() {
+        let mut s = AppState::new();
+        let before = s.transcript.len();
+        s.apply(&ev("{\"type\":\"rewound\",\"text\":\"\"}"));
+        assert_eq!(s.transcript.len(), before);
+        assert!(s.rewound_text.is_none());
     }
 
     #[test]

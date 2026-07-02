@@ -213,6 +213,26 @@ class AgentProtocol:
                 "message": "Interrupt signal sent"
             })
 
+        elif req_type == "rewind":
+            # Esc-Esc：回退最后一轮。弹出尾部消息直到（含）最后一个 user 消息，
+            # 把该消息文本发回（rewound 事件）供前端填回输入框编辑重发。
+            from .core.state import MessageRole
+            popped_text = ""
+            if self.state is not None and self.state.messages:
+                msgs = self.state.messages
+                # 找最后一个 user 消息的位置
+                idx = None
+                for i in range(len(msgs) - 1, -1, -1):
+                    if msgs[i].role == MessageRole.USER:
+                        idx = i
+                        break
+                if idx is not None:
+                    popped_text = msgs[idx].content or ""
+                    del msgs[idx:]
+                    # turn 数同步回退一轮（不为负）
+                    self.state.turn_count = max(0, self.state.turn_count - 1)
+            self._send_event("rewound", {"text": popped_text})
+
         elif req_type == "save_config":
             # 引导式配置：前端把答案发来，写入全局 config.json 并热更当前 client。
             from .core.setup_wizard import write_config
