@@ -171,6 +171,11 @@ class AgentProtocol:
             from .core.commands import is_command
             if is_command(content):
                 await self._handle_slash_command(content)
+            elif content.startswith("!") and len(content) > 1:
+                # `!command` 直通（Claude Code 风格）：直接跑 shell，不经 LLM。
+                # 输出回 TUI 显示，并记入会话上下文供模型后续参考。
+                self._turn_task = asyncio.ensure_future(
+                    self._run_bang_shell(content[1:].strip()))
             else:
                 # 作为独立任务运行 turn，使 handle_request 立即返回、
                 # dispatcher 能继续读取后续请求（如运行期间的 interrupt）。
@@ -251,6 +256,28 @@ class AgentProtocol:
                     ev["completion_tokens"] = mc.total_completion_tokens
                     ev["max_context_tokens"] = getattr(self.config, "max_context_tokens", 0)
                 self._send_event("session_state", ev)
+            self._turn_task = None
+
+    async def _run_bang_shell(self, command: str) -> None:
+        """`!command` 直通：用注册的 shell 工具直接执行（沙箱+超时），输出发回
+        TUI（shell_output 事件），并把命令+输出记入会话上下文供模型后续参考。"""
+        try:
+            tool = self.tool_registry.get_tool("shell_exec")
+            if tool is None:
+                self._send_event("shell_output", {
+                    "command": command, "output": "shell_exec tool unavailable"})
+                return
+            output = await tool.execute(command=command)
+            self._send_event("shell_output", {"command": command,
+                                              "output": str(output)[:8000]})
+            # 记入上下文：模型下轮能看到用户手动跑了什么、结果如何。
+            if self.state is not None:
+                self.state.add_user_message(
+                    f"[ran shell command] $ {command}\n{str(output)[:4000]}")
+        except Exception as e:  # noqa: BLE001
+            self._send_event("shell_output", {"command": command,
+                                              "output": f"error: {e}"})
+        finally:
             self._turn_task = None
 
     async def _handle_slash_command(self, text: str) -> None:
