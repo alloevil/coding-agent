@@ -124,3 +124,36 @@ def test_bare_bang_is_normal_message(monkeypatch):
         await asyncio.sleep(0.01)
         assert started["v"] is True
     asyncio.run(main())
+
+
+def test_rewind_pops_through_last_user_message(monkeypatch):
+    async def main():
+        from coding_agent.core.state import AgentState
+        proto = _make_protocol(monkeypatch)
+        st = AgentState()
+        st.add_user_message("first")
+        st.add_assistant_message("reply one")
+        st.add_user_message("second ask")
+        st.add_assistant_message("reply two")
+        st.turn_count = 2
+        proto.state = st
+        await proto.handle_request({"type": "rewind"})
+        # rewound 事件带被弹出的 user 文本
+        ev = next(d for t, d in proto._events if t == "rewound")
+        assert ev["text"] == "second ask"
+        # 消息弹到最后一个 user 之前；turn 回退
+        assert len(st.messages) == 2
+        assert st.messages[-1].content == "reply one"
+        assert st.turn_count == 1
+    asyncio.run(main())
+
+
+def test_rewind_on_empty_state_is_safe(monkeypatch):
+    async def main():
+        from coding_agent.core.state import AgentState
+        proto = _make_protocol(monkeypatch)
+        proto.state = AgentState()
+        await proto.handle_request({"type": "rewind"})
+        ev = next(d for t, d in proto._events if t == "rewound")
+        assert ev["text"] == ""
+    asyncio.run(main())

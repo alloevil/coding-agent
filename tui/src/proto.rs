@@ -40,6 +40,9 @@ pub enum Request {
     },
     /// Interrupt the running turn.
     Interrupt,
+    /// Rewind the last turn (Esc-Esc): backend pops through the last user
+    /// message and replies with a `rewound` event carrying its text.
+    Rewind,
     /// Answer a pending permission request.
     PermissionResponse { approved: bool },
     /// Answer a pending ask_user question.
