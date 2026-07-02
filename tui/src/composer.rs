@@ -179,6 +179,14 @@ impl Composer {
         }
     }
 
+    /// Discard the current draft without recording it into history (Esc-clear).
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.cursor = 0;
+        self.hist_idx = None;
+        self.saved_draft.clear();
+    }
+
     /// Take the current text and clear the buffer (on submit). Records the
     /// text into history (skipping empties and exact-duplicate of last entry).
     pub fn take(&mut self) -> String {
@@ -451,6 +459,17 @@ mod tests {
         c.insert_str("edit @ma");
         c.complete_at("src/main.rs");
         assert_eq!(c.text(), "edit @src/main.rs ");
+    }
+
+    #[test]
+    fn clear_discards_draft_without_history() {
+        let mut c = Composer::new();
+        c.insert_str("half-typed draft");
+        c.clear();
+        assert!(c.is_empty());
+        // history untouched: ↑ recalls nothing
+        c.history_prev();
+        assert!(c.is_empty());
     }
 
     #[test]
