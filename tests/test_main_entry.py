@@ -173,3 +173,29 @@ async def test_main_update_subcommand_returns_early(isolated_home, monkeypatch):
 def test_parse_args_collects_c_overrides():
     opts = M._parse_args(["-c", "model=x", "-c", "protocol=anthropic"])
     assert opts["overrides"] == ["model=x", "protocol=anthropic"]
+
+
+def test_parse_args_print_mode():
+    opts = M._parse_args(["-p", "explain this repo"])
+    assert opts["print"] == "explain this repo"
+    assert M._parse_args([])["print"] is None
+
+
+async def test_run_print_outputs_final_reply(isolated_home, capsys, monkeypatch, tmp_path):
+    """run_print：mock 模型一轮文本回复 → stdout 只有最终答案，退出码 0。"""
+    from coding_agent.core.config import AgentConfig
+
+    cfg = AgentConfig(api_key="k", model="mock", auto_approve=True,
+                      session_db_path=str(tmp_path / "s.db"))
+    agent = M.CodingAgent(cfg)
+
+    async def fake_model(context, tools):
+        return {"content": "the final answer", "tool_calls": []}
+
+    agent.agent_loop.set_model_call_fn(fake_model)
+    code = await agent.run_print("do the thing")
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "the final answer" in out
+    # 无横幅噪声
+    assert "Coding Agent started" not in out
