@@ -74,6 +74,8 @@ async fn main() -> std::io::Result<()> {
     // No `-c` alias: the Python CLI uses `-c KEY=VALUE` for config overrides,
     // and the launcher forwards args to whichever front-end runs.
     let want_continue = env::args().any(|a| a == "--continue");
+    // --resume opens a session picker (Claude Code parity).
+    let want_resume = env::args().any(|a| a == "--resume");
 
     let mut backend = Backend::spawn(&python, &cwd)?;
     // Always send init (even with an empty key) so the backend doesn't block
@@ -92,6 +94,6 @@ async fn main() -> std::io::Result<()> {
         })
         .await?;
 
-    app::run(backend, model_hint, force_setup, want_continue).await
+    app::run(backend, model_hint, force_setup, want_continue, want_resume).await
 }
 
