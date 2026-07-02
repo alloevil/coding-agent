@@ -22,6 +22,18 @@ def test_help_lists_commands():
     r = dispatch("/help", _ctx())
     assert r.kind == "print"
     assert "/compact" in r.payload
+    assert "/resume" in r.payload   # newly documented
+
+
+def test_resume_is_sessions_alias():
+    assert dispatch("/resume", _ctx()).payload == "sessions"
+    assert dispatch("/sessions", _ctx()).payload == "sessions"
+
+
+def test_diff_and_context_commands():
+    assert dispatch("/diff", _ctx()).payload == "diff"
+    r = dispatch("/context", _ctx())
+    assert r.kind == "print" and "tokens" in r.payload
 
 
 def test_tools_lists_registered():

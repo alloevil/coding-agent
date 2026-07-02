@@ -1006,7 +1006,7 @@ async fn handle_key(
                         let text = composer.take();
                         if text.trim().is_empty() {
                             // nothing to send
-                        } else if text.trim() == "/sessions" {
+                        } else if matches!(text.trim(), "/sessions" | "/resume") {
                             // Open the session picker live (not just at launch).
                             state.want_resume = true;
                             backend.send(&Request::ListSessions).await?;

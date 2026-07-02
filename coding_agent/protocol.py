@@ -422,6 +422,18 @@ class AgentProtocol:
         elif action == "quit":
             # /quit /exit：告诉前端退出（后端无法直接关 TUI）。
             self._send_event("quit", {})
+        elif action == "sessions":
+            # /sessions /resume：列会话给前端（TUI 会开选择器）。
+            sessions = self.session_store.list_sessions()
+            self._send_event("sessions_list", {"sessions": sessions})
+        elif action == "diff":
+            # /diff：显示工作区改动（git diff --stat + diff）。
+            try:
+                tool = self.tool_registry.get_tool("git_diff")
+                out = await tool.execute() if tool else "git_diff unavailable"
+            except Exception as e:  # noqa: BLE001
+                out = f"diff failed: {e}"
+            self._send_event("command_result", {"text": str(out)[:8000] or "No changes."})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})

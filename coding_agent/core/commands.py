@@ -58,7 +58,9 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /plan        — show the current plan",
         "  /init        — generate AGENTS.md from a repo scan",
         "  /clear, /new — start a fresh session",
-        "  /sessions    — list recent sessions",
+        "  /sessions, /resume — pick a past session to resume",
+        "  /diff        — show this session's file changes",
+        "  /context     — context window usage breakdown",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -103,6 +105,27 @@ def _cmd_new(args: str, ctx: CommandContext) -> CommandResult:
 
 def _cmd_sessions(args: str, ctx: CommandContext) -> CommandResult:
     return CommandResult("action", "sessions")
+
+
+def _cmd_resume(args: str, ctx: CommandContext) -> CommandResult:
+    # /resume == /sessions: open the session picker.
+    return CommandResult("action", "sessions")
+
+
+def _cmd_diff(args: str, ctx: CommandContext) -> CommandResult:
+    # Show this working tree's changes (delegates to git via an action).
+    return CommandResult("action", "diff")
+
+
+def _cmd_context(args: str, ctx: CommandContext) -> CommandResult:
+    used = ctx.total_prompt_tokens + ctx.total_completion_tokens
+    return CommandResult(
+        "print",
+        f"Context: ~{used} tokens used "
+        f"({ctx.total_prompt_tokens} in / {ctx.total_completion_tokens} out"
+        f"{', ' + str(ctx.total_reasoning_tokens) + ' reasoning' if ctx.total_reasoning_tokens else ''}). "
+        f"Cache hit {ctx.cache_hit_rate*100:.0f}%.",
+    )
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -239,6 +262,9 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "clear": _cmd_clear,
     "new": _cmd_new,
     "sessions": _cmd_sessions,
+    "resume": _cmd_resume,
+    "diff": _cmd_diff,
+    "context": _cmd_context,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
