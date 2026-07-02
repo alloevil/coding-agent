@@ -398,6 +398,9 @@ class AgentProtocol:
                 self._send_event("command_result", {"text": "🗜️  Context compacted"})
             else:
                 self._send_event("command_result", {"text": "Nothing to compact yet"})
+        elif action == "quit":
+            # /quit /exit：告诉前端退出（后端无法直接关 TUI）。
+            self._send_event("quit", {})
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
