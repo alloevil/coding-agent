@@ -38,6 +38,9 @@ class AgentConfig:
     extra_headers: dict[str, str] = field(default_factory=dict)  # 网关自定义 header
     # 后端协议：openai（/chat/completions）或 anthropic（/v1/messages）
     protocol: str = "openai"
+    # extended-thinking 预算（仅 anthropic）：>0 时请求带 thinking，模型透出
+    # 独立推理块（TUI 会显示"thinking"）。0=关闭。
+    thinking_budget: int = 0
     
     # Context 配置
     max_context_tokens: int = 200000
@@ -286,6 +289,7 @@ _OVERRIDE_KEYS: dict[str, Any] = {
     "max_tokens": int,
     "max_turns": int,
     "max_total_tokens": int,
+    "thinking_budget": int,
     "temperature": lambda s: None if str(s).strip().lower() in ("none", "null", "") else float(s),
     "stream": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
     "auto_format": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),

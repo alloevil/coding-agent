@@ -139,10 +139,12 @@ class AnthropicStreamAccumulator:
       - message_delta / message_start: 抓 usage
     """
 
-    def __init__(self, on_text_delta=None):
+    def __init__(self, on_text_delta=None, on_reasoning_delta=None):
         self._on_text = on_text_delta
+        self._on_reasoning = on_reasoning_delta
         self._blocks: dict[int, dict[str, Any]] = {}
         self._text_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
         self.usage: dict[str, Any] = {}
 
     def feed(self, event: dict[str, Any]) -> None:
@@ -165,6 +167,13 @@ class AnthropicStreamAccumulator:
                     self._text_parts.append(chunk)
                     if self._on_text is not None:
                         self._on_text(chunk)
+            elif dtype == "thinking_delta":
+                # extended-thinking：推理逐字流式（与正文分开）
+                chunk = delta.get("thinking", "")
+                if chunk:
+                    self._reasoning_parts.append(chunk)
+                    if self._on_reasoning is not None:
+                        self._on_reasoning(chunk)
             elif dtype == "input_json_delta":
                 idx = event.get("index", 0)
                 if idx in self._blocks:
@@ -188,6 +197,6 @@ class AnthropicStreamAccumulator:
         return {
             "content": "".join(self._text_parts),
             "tool_calls": tool_calls,
-            "reasoning": "",
+            "reasoning": "".join(self._reasoning_parts),
             "usage": _usage_to_openai(self.usage),
         }

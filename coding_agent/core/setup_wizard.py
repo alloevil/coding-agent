@@ -126,6 +126,7 @@ _EDITABLE_KEYS: dict[str, Any] = {
     "auto_approve": lambda s: str(s).strip().lower() in ("1", "true", "yes", "y", "on"),
     "max_tokens": int,
     "temperature": lambda s: None if str(s).strip().lower() in ("none", "null", "") else float(s),
+    "thinking_budget": int,
 }
 
 

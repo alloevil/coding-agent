@@ -103,6 +103,22 @@ def test_stream_accumulator_text():
     assert acc.result()["content"] == "Hello"
 
 
+def test_stream_accumulator_thinking_delta():
+    """extended-thinking：thinking_delta 累积到 reasoning + 触发回调，与正文分开。"""
+    got = []
+    acc = AnthropicStreamAccumulator(on_reasoning_delta=lambda c: got.append(c))
+    acc.feed({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "thinking_delta", "thinking": "step 1 "}})
+    acc.feed({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "thinking_delta", "thinking": "step 2"}})
+    acc.feed({"type": "content_block_delta", "index": 1,
+              "delta": {"type": "text_delta", "text": "the answer"}})
+    r = acc.result()
+    assert r["reasoning"] == "step 1 step 2"
+    assert r["content"] == "the answer"   # reasoning 不混入正文
+    assert got == ["step 1 ", "step 2"]   # 逐字回调
+
+
 def test_stream_accumulator_tool_use():
     acc = AnthropicStreamAccumulator()
     acc.feed({"type": "content_block_start", "index": 0,
