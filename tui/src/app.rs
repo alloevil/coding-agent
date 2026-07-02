@@ -215,6 +215,16 @@ impl AppState {
                     }).collect();
                 }
             }
+            "shell_output" => {
+                // `!command` passthrough result: show as a tool-style entry.
+                let cmd = ev.str_field("command").unwrap_or("?").to_string();
+                let out = ev.str_field("output").unwrap_or("").to_string();
+                self.transcript.push(Entry::ToolCall {
+                    name: "!".into(), target: cmd });
+                self.transcript.push(Entry::ToolResult { ok: true, body: out });
+                self.status_str = Status::Idle.label().into();
+                return true; // ends the "turn"
+            }
             "config_saved" => {
                 self.needs_setup = false;
                 if let Some(m) = ev.str_field("model") {
@@ -1047,6 +1057,16 @@ mod tests {
         assert_eq!(s.plan.len(), 2);
         assert_eq!(s.plan[0], ("read code".to_string(), "completed".to_string()));
         assert_eq!(s.plan[1].1, "in_progress");
+    }
+
+    #[test]
+    fn shell_output_renders_and_ends_turn() {
+        let mut s = AppState::new();
+        let ended = s.apply(&ev("{\"type\":\"shell_output\",\"command\":\"ls\",\"output\":\"a.rs\\nb.rs\"}"));
+        assert!(ended, "shell passthrough ends the turn");
+        let joined = rendered(&s).join("\n");
+        assert!(joined.contains("ls"));
+        assert!(joined.contains("a.rs"));
     }
 
     #[test]

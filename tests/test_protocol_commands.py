@@ -80,3 +80,47 @@ def test_non_command_still_runs_turn(monkeypatch):
         await asyncio.sleep(0.01)
         assert started["v"] is True
     asyncio.run(main())
+
+
+def test_bang_shell_runs_tool_and_emits_output(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+
+        class FakeShell:
+            async def execute(self, **kw):
+                assert kw["command"] == "echo hi"
+                return "hi\n"
+
+        proto.tool_registry.get_tool = lambda name: FakeShell() if name == "shell_exec" else None
+        # state 需要 add_user_message
+        msgs = []
+        proto.state = type("S", (), {
+            "session_id": "s", "turn_count": 0,
+            "add_user_message": lambda self, m: msgs.append(m),
+        })()
+        await proto.handle_request({"type": "user_input", "content": "!echo hi"})
+        if proto._turn_task:
+            await asyncio.wait_for(proto._turn_task, timeout=2)
+        await asyncio.sleep(0.01)
+        # shell_output 事件带命令和输出
+        ev = next(d for t, d in proto._events if t == "shell_output")
+        assert ev["command"] == "echo hi"
+        assert "hi" in ev["output"]
+        # 记入了上下文
+        assert msgs and "echo hi" in msgs[0]
+    asyncio.run(main())
+
+
+def test_bare_bang_is_normal_message(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        started = {"v": False}
+
+        async def fake_turn(content):
+            started["v"] = True
+        proto._run_turn = fake_turn
+        # 单独一个 "!" 不是命令，照常走 turn
+        await proto.handle_request({"type": "user_input", "content": "!"})
+        await asyncio.sleep(0.01)
+        assert started["v"] is True
+    asyncio.run(main())
