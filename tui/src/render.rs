@@ -58,9 +58,11 @@ pub fn render_entry(e: &Entry) -> Vec<Line<'static>> {
             lines
         }
         Entry::ToolCall { name, target } => {
+            // "● tool_name  target" — bold tool name (bright), dim target.
             let mut spans = vec![
-                Span::raw("  "),
-                Span::styled(format!("🔧 {name}"), Style::default().fg(C_TOOL)),
+                Span::styled("  ● ", Style::default().fg(C_TOOL)),
+                Span::styled(name.clone(),
+                             Style::default().fg(C_TOOL).add_modifier(Modifier::BOLD)),
             ];
             if !target.is_empty() {
                 spans.push(Span::styled(format!("  {target}"), Style::default().fg(C_DIM)));
@@ -68,11 +70,12 @@ pub fn render_entry(e: &Entry) -> Vec<Line<'static>> {
             vec![Line::from(spans)]
         }
         Entry::ToolResult { ok, body } => {
-            let mark = if *ok { "✅" } else { "❌" };
-            let mut lines = vec![Line::from(Span::styled(
-                format!("  {mark}"),
-                Style::default().fg(if *ok { C_ADD } else { C_ERR }),
-            ))];
+            // "  └ ✔/✗" connector under the call, then the body indented.
+            let (mark, color) = if *ok { ("✔", C_ADD) } else { ("✗", C_ERR) };
+            let mut lines = vec![Line::from(vec![
+                Span::styled("    └ ", Style::default().fg(C_DIM)),
+                Span::styled(mark, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            ])];
             if !body.is_empty() {
                 lines.extend(render_diff_or_text(body));
             }
@@ -421,7 +424,21 @@ mod tests {
     #[test]
     fn tool_result_ok_shows_check() {
         let ls = render_entry(&Entry::ToolResult { ok: true, body: String::new() });
-        assert!(text_of(&ls[0]).contains("✅"));
+        assert!(text_of(&ls[0]).contains("✔"));
+    }
+
+    #[test]
+    fn tool_call_shows_name_and_target() {
+        let ls = render_entry(&Entry::ToolCall {
+            name: "shell_exec".into(), target: "ls -la".into() });
+        let t = text_of(&ls[0]);
+        assert!(t.contains("shell_exec") && t.contains("ls -la"));
+    }
+
+    #[test]
+    fn tool_result_err_shows_cross() {
+        let ls = render_entry(&Entry::ToolResult { ok: false, body: String::new() });
+        assert!(text_of(&ls[0]).contains("✗"));
     }
 
     #[test]

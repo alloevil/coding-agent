@@ -1295,23 +1295,41 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         spans.push(Span::styled("esc to interrupt", Style::default().fg(Color::DarkGray)));
         f.render_widget(Paragraph::new(Line::from(spans)), chunks[4]);
     } else {
-        // Idle: mode + status + context-aware key hints.
+        // Idle: mode chip + status + context-aware key hints with the KEYS
+        // highlighted (bright) and their labels dimmed, for readability.
         let mut spans = Vec::new();
         if state.auto_approve {
-            // Claude Code-style mode chip when tools run unprompted.
             spans.push(Span::styled(" ⏵⏵ auto-accept ",
                 Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled(format!(" [{}] ", state.status_str),
-                                Style::default().fg(Color::DarkGray)));
-        let hint = if state.scroll > 0 {
-            "PgUp/PgDn scroll · End follow · ⏎ send"
+        // key/label pairs → "key" bright cyan, "label" dim, "·" separators dim.
+        let pairs: &[(&str, &str)] = if state.scroll > 0 {
+            &[("PgUp/PgDn", "scroll"), ("End", "follow"), ("⏎", "send")]
         } else {
-            "⏎ send · ⇧⏎ newline · / commands · @ files · ⇧⇥ auto-accept · ⌃C quit"
+            &[("⏎", "send"), ("⇧⏎", "newline"), ("/", "cmds"),
+              ("@", "files"), ("⇧⇥", "auto-accept"), ("⌃C", "quit")]
         };
-        spans.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
+        spans.extend(hint_spans(pairs));
         f.render_widget(Paragraph::new(Line::from(spans)), chunks[4]);
     }
+}
+
+/// Render key/label hint pairs with keys highlighted and labels dimmed,
+/// separated by dim dots: " ⏎ send · / cmds · …".
+fn hint_spans(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
+    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let lbl_style = Style::default().fg(Color::DarkGray);
+    let mut out = vec![Span::raw(" ")];
+    for (i, (k, l)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push(Span::styled(" · ", lbl_style));
+        }
+        out.push(Span::styled(k.to_string(), key_style));
+        out.push(Span::raw(" "));
+        out.push(Span::styled(l.to_string(), lbl_style));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1390,7 +1408,7 @@ mod tests {
         s.apply(&ev("{\"type\":\"tool_result\",\"is_error\":false}"));
         let joined = rendered(&s).join("\n");
         assert!(joined.contains("grep"));
-        assert!(joined.contains("✅"));
+        assert!(joined.contains("✔"));
     }
 
     #[test]
