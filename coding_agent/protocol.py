@@ -511,8 +511,66 @@ class AgentProtocol:
                     "text": f"Approval mode: {mode}"
                             f" ({'tools run without confirmation' if mode == 'auto' else 'each write/exec is confirmed'})."
                             f"\nChange with: /permissions auto|ask"})
+        elif action == "status":
+            # /status：会话结构化状态（会话/回合/token 用量）。
+            mc = self.model_client
+            st = self.state
+            sid = (getattr(st, "session_id", "") or "")[:8]
+            turns = getattr(st, "turn_count", 0) if st else 0
+            nmsg = len(getattr(st, "messages", []) or []) if st else 0
+            pol = getattr(self.agent_loop, "permission_policy", None)
+            plan_mode = getattr(pol, "plan_mode", False)
+            lines = [
+                "📊 Session status",
+                f"  session: {sid or '(none)'}   turn: {turns}   messages: {nmsg}",
+                f"  model: {getattr(self.config, 'model', '?')} "
+                f"({getattr(self.config, 'protocol', 'openai')})",
+                f"  tokens: {mc.total_prompt_tokens} in / {mc.total_completion_tokens} out"
+                + (f" / {mc.total_reasoning_tokens} reasoning" if getattr(mc, 'total_reasoning_tokens', 0) else "")
+                + f"   cache {mc.cache_hit_rate*100:.0f}%",
+                f"  approval: {'auto' if self.config.auto_approve else 'ask'}"
+                + ("   🧭 plan-mode ON" if plan_mode else ""),
+            ]
+            self._send_event("command_result", {"text": "\n".join(lines)})
+        elif action == "plan":
+            # /plan：渲染当前计划（若有）。
+            plan = (self.state.metadata.get("plan")
+                    if self.state and getattr(self.state, "metadata", None) else None)
+            if plan:
+                from .tools.plan_ops import render_plan
+                self._send_event("command_result", {"text": render_plan(plan)})
+            else:
+                self._send_event("command_result", {"text": "No plan set yet."})
+        elif action == "plan_mode":
+            # /plan-mode：切换只读规划模式；关闭时注入一次性 plan→build 交接提醒。
+            pol = getattr(self.agent_loop, "permission_policy", None)
+            if pol is None:
+                self._send_event("command_result", {"text": "Plan mode unavailable."})
+            else:
+                was_plan = pol.plan_mode
+                pol.plan_mode = not pol.plan_mode
+                msg = ("🧭 Plan mode ON — read-only; the agent can explore and plan "
+                       "but won't edit/run." if pol.plan_mode
+                       else "🧭 Plan mode OFF — edits allowed again.")
+                if was_plan and not pol.plan_mode and self.state:
+                    from .core.agent_handoff import build_switch_note
+                    had_plan = bool((self.state.metadata or {}).get("plan"))
+                    self.state.metadata["pending_handoff"] = build_switch_note(had_plan)
+                self._send_event("command_result", {"text": msg})
+        elif action == "config" or action.startswith("config:"):
+            # /config：显示（打码后的）全局配置。改配置走 CLI 或 /setup。
+            from .core import setup_wizard as W
+            import json as _json
+            spec = action.split(":", 1)[1].strip() if ":" in action else ""
+            if not spec:
+                shown = _json.dumps(W.redact(W.read_config()), indent=2, ensure_ascii=False)
+                self._send_event("command_result", {"text": shown or "(no config)"})
+            else:
+                self._send_event("command_result", {
+                    "text": "Editing config from the TUI isn't supported — use "
+                            "/setup to reconfigure, or `coding-agent config set <k> <v>`."})
         else:
-            # 其它 action（status/plan-mode/agents...）：给一个可读回执。
+            # 其它 action（agents/agent/setup...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
 
     def _handle_export(self, path_arg: str) -> None:

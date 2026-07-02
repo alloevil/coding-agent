@@ -314,3 +314,74 @@ def test_permissions_toggle_persists(monkeypatch, tmp_path):
         cfg = json.loads((tmp_path / "config.json").read_text())
         assert cfg["auto_approve"] is False
     asyncio.run(main())
+
+
+def test_status_reports_session_and_tokens(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.config.auto_approve = False
+        proto.model_client.total_prompt_tokens = 120
+        proto.model_client.total_completion_tokens = 30
+        # give it an agent_loop with a permission policy (plan-mode off)
+        proto.agent_loop = type("AL", (), {})()
+        proto.agent_loop.permission_policy = type("P", (), {"plan_mode": False})()
+        await proto._handle_command_action("status")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "Session status" in text
+        assert "120 in / 30 out" in text
+        assert "approval: ask" in text
+        assert "plan-mode" not in text  # off → not shown
+    asyncio.run(main())
+
+
+def test_plan_renders_when_set_and_empty_otherwise(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        # no metadata → "No plan set yet."
+        proto.state = type("S", (), {"session_id": "s", "turn_count": 0, "metadata": {}})()
+        await proto._handle_command_action("plan")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "No plan set yet" in text
+        # with a plan → rendered steps
+        proto._events.clear()
+        proto.state.metadata = {"plan": [{"step": "write tests", "status": "pending"},
+                                         {"step": "ship it", "status": "in_progress"}]}
+        await proto._handle_command_action("plan")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "write tests" in text and "ship it" in text
+    asyncio.run(main())
+
+
+def test_plan_mode_toggles_policy_and_handoff(monkeypatch):
+    async def main():
+        proto = _make_protocol(monkeypatch)
+        proto.state = type("S", (), {"session_id": "s", "turn_count": 0,
+                                     "metadata": {"plan": [{"step": "x", "status": "done"}]}})()
+        proto.agent_loop = type("AL", (), {})()
+        proto.agent_loop.permission_policy = type("P", (), {"plan_mode": False})()
+        # turn ON
+        await proto._handle_command_action("plan_mode")
+        assert proto.agent_loop.permission_policy.plan_mode is True
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "ON" in text
+        # turn OFF → injects a one-shot handoff note
+        proto._events.clear()
+        await proto._handle_command_action("plan_mode")
+        assert proto.agent_loop.permission_policy.plan_mode is False
+        assert "pending_handoff" in proto.state.metadata
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "OFF" in text
+    asyncio.run(main())
+
+
+def test_config_shows_redacted(monkeypatch, tmp_path):
+    async def main():
+        monkeypatch.setenv("CODING_AGENT_HOME", str(tmp_path))
+        (tmp_path / "config.json").write_text(
+            '{"api_key": "sk-supersecret", "model": "claude-opus-4-8"}')
+        proto = _make_protocol(monkeypatch)
+        await proto._handle_command_action("config:")
+        text = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "claude-opus-4-8" in text
+        assert "sk-supersecret" not in text  # redacted
+    asyncio.run(main())
