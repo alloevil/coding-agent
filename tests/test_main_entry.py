@@ -199,3 +199,5 @@ async def test_run_print_outputs_final_reply(isolated_home, capsys, monkeypatch,
     assert "the final answer" in out
     # 无横幅噪声
     assert "Coding Agent started" not in out
+    # headless 必须自动放行，否则会阻塞在交互式权限确认
+    assert agent.agent_loop.permission_policy.auto_approve is True
