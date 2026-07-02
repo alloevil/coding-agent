@@ -144,6 +144,37 @@ In the TUI:
 | `Esc` | interrupt a running turn · clear the draft when idle |
 | `Ctrl+L` | clear the screen (session continues) |
 | `PgUp/PgDn`, mouse wheel | scroll the transcript |
+| `/vim` then `Esc` | opt-in vim modal editing (NORMAL/INSERT chip in the footer) |
+
+### Slash commands
+
+Type `/help` in a session for the live list. All are also Tab-completable.
+
+| Command | What it does |
+|---|---|
+| `/help` | list all commands |
+| `/tools` | list available tools |
+| `/model [provider:model]` | show or switch the model / provider |
+| `/cost`, `/context` | token usage (with $ estimate) / context-window breakdown |
+| `/compact` | summarize & compact the conversation now |
+| `/recap` | ask the model to summarize the session so far |
+| `/review [focus]` | review the current uncommitted changes |
+| `/diff` | show this session's file changes |
+| `/undo` | revert the last file change |
+| `/plan`, `/plan-mode` | show the plan / toggle read-only planning mode |
+| `/memory [add <text>]` | show or append project memory |
+| `/export [path]` | export the session to markdown |
+| `/agents`, `/agent <name>` | list / switch named agent profiles |
+| `/sessions`, `/resume` | pick a past session to resume |
+| `/new`, `/clear` | start a fresh session |
+| `/mcp`, `/hooks` | list configured MCP servers / lifecycle hooks |
+| `/doctor [probe]` | environment health check (probe hits the endpoint) |
+| `/permissions [auto\|ask]` | show or set the tool-approval mode |
+| `/vim` | toggle vim modal editing (TUI only) |
+| `/config`, `/setup`, `/status` | inspect config / re-run the wizard / session status |
+| `/init` | generate AGENTS.md from a repo scan |
+
+Custom commands live in `.coding-agent/commands/<name>.md` (a prompt template; `$ARGUMENTS` is substituted).
 
 ## 🏗️ Architecture
 
