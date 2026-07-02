@@ -255,6 +255,35 @@ pub fn shimmer_spans(text: &str, tick: usize) -> Vec<Span<'static>> {
     spans
 }
 
+/// A plan step for the live todo panel: (description, status).
+/// status ∈ {"pending","in_progress","completed"}.
+pub type PlanStep = (String, String);
+
+/// Render the live plan/todo panel (Claude Code's TodoWrite panel).
+/// Completed steps are dimmed with [x], in-progress is bold cyan [~], pending [ ].
+pub fn render_plan_panel(steps: &[PlanStep]) -> Vec<Line<'static>> {
+    if steps.is_empty() {
+        return Vec::new();
+    }
+    let done = steps.iter().filter(|(_, s)| s == "completed").count();
+    let mut out = vec![Line::from(Span::styled(
+        format!(" Plan  ({done}/{})", steps.len()),
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ))];
+    for (desc, status) in steps {
+        let (sym, style) = match status.as_str() {
+            "completed" => ("✔", Style::default().fg(C_DIM).add_modifier(Modifier::CROSSED_OUT)),
+            "in_progress" => ("▸", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            _ => ("○", Style::default().fg(Color::White)),
+        };
+        out.push(Line::from(vec![
+            Span::styled(format!("  {sym} "), style),
+            Span::styled(desc.clone(), style),
+        ]));
+    }
+    out
+}
+
 /// ASCII wordmark for the welcome screen (our own art — not Codex's frames).
 /// Rendered with an animated shimmer sweep, replicating Codex's animated
 /// welcome banner behavior.
@@ -404,5 +433,25 @@ mod tests {
         let ls = welcome_banner(0, 20);
         assert_eq!(ls.len(), 1);
         assert!(text_of(&ls[0]).contains("coding-agent"));
+    }
+
+    #[test]
+    fn plan_panel_shows_progress_and_symbols() {
+        let steps = vec![
+            ("read code".to_string(), "completed".to_string()),
+            ("write fix".to_string(), "in_progress".to_string()),
+            ("run tests".to_string(), "pending".to_string()),
+        ];
+        let ls = render_plan_panel(&steps);
+        let joined: String = ls.iter().map(|l| text_of(l)).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("(1/3)"), "shows completed/total");
+        assert!(joined.contains("read code"));
+        assert!(joined.contains("write fix"));
+        assert!(joined.contains("✔") && joined.contains("▸") && joined.contains("○"));
+    }
+
+    #[test]
+    fn plan_panel_empty_is_empty() {
+        assert!(render_plan_panel(&[]).is_empty());
     }
 }

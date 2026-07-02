@@ -162,6 +162,8 @@ pub struct AppState {
     /// Context usage for the header: prompt+completion tokens and the max window.
     pub used_tokens: u64,
     pub max_context: u64,
+    /// Current plan/todo steps (description, status) for the live panel.
+    pub plan: Vec<crate::render::PlanStep>,
 }
 
 impl AppState {
@@ -199,6 +201,16 @@ impl AppState {
             "command_result" => {
                 if let Some(t) = ev.str_field("text") {
                     self.transcript.push(Entry::Notice(t.to_string()));
+                }
+            }
+            "plan" => {
+                // Live plan/todo panel. Steps: [{step, status}].
+                if let Some(arr) = ev.rest.get("steps").and_then(|v| v.as_array()) {
+                    self.plan = arr.iter().filter_map(|s| {
+                        let desc = s.get("step").and_then(|v| v.as_str())?;
+                        let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                        Some((desc.to_string(), status.to_string()))
+                    }).collect();
                 }
             }
             "config_saved" => {
@@ -718,11 +730,18 @@ fn render_wizard(f: &mut Frame, w: &Wizard) {
 fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bool) {
     // Input box grows with the number of lines (2 borders + content), capped.
     let input_lines = composer.line_count().clamp(1, 8) as u16;
+    // Plan panel height: 0 when no plan, else steps + title (capped at 8 rows).
+    let plan_h: u16 = if state.plan.is_empty() {
+        0
+    } else {
+        ((state.plan.len() + 1).min(8) as u16) + 2 // +2 borders
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                 // header
             Constraint::Min(3),                     // transcript
+            Constraint::Length(plan_h),             // live plan panel (0 = hidden)
             Constraint::Length(input_lines + 2),    // input box (+borders)
             Constraint::Length(1),                  // status / completion hint
         ])
@@ -764,6 +783,17 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         chunks[1],
     );
 
+    // Live plan/todo panel (chunks[2]) — only when a plan exists.
+    if !state.plan.is_empty() {
+        let plan_lines = crate::render::render_plan_panel(&state.plan);
+        f.render_widget(
+            Paragraph::new(plan_lines)
+                .block(Block::default().borders(Borders::ALL).title("plan"))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    }
+
     // Input box (multi-line aware). Empty + idle → dim-italic placeholder.
     let prompt = if turn_running { "(running — Esc to stop) " } else { "› " };
     let input_para = if composer.text().is_empty() && !turn_running {
@@ -779,7 +809,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         input_para
             .block(Block::default().borders(Borders::ALL))
             .wrap(Wrap { trim: false }),
-        chunks[2],
+        chunks[3],
     );
 
     // Status / context-aware hint line.
@@ -792,7 +822,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
         f.render_widget(
             Paragraph::new(format!(" Tab ⇥  {}{}", shown.join("  "), more))
                 .style(Style::default().fg(Color::Cyan)),
-            chunks[3],
+            chunks[4],
         );
     } else if turn_running {
         // Codex-style busy row: "⠹ Working  {elapsed}  esc to interrupt", label shimmers.
@@ -805,7 +835,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
             format!("  {}  ", crate::render::fmt_elapsed_compact(state.elapsed_secs())),
             Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled("esc to interrupt", Style::default().fg(Color::DarkGray)));
-        f.render_widget(Paragraph::new(Line::from(spans)), chunks[3]);
+        f.render_widget(Paragraph::new(Line::from(spans)), chunks[4]);
     } else {
         // Idle: status + context-aware key hints.
         let status_span = Span::styled(format!(" [{}] ", state.status_str),
@@ -819,7 +849,7 @@ fn render(f: &mut Frame, state: &AppState, composer: &Composer, turn_running: bo
             status_span,
             Span::styled(hint, Style::default().fg(Color::DarkGray)),
         ]);
-        f.render_widget(Paragraph::new(line), chunks[3]);
+        f.render_widget(Paragraph::new(line), chunks[4]);
     }
 }
 
@@ -980,6 +1010,15 @@ mod tests {
         let mut s = AppState::new();
         s.apply(&ev("{\"type\":\"command_result\",\"text\":\"Current model: claude\"}"));
         assert!(rendered(&s).iter().any(|l| l.contains("Current model: claude")));
+    }
+
+    #[test]
+    fn plan_event_populates_panel() {
+        let mut s = AppState::new();
+        s.apply(&ev("{\"type\":\"plan\",\"steps\":[{\"step\":\"read code\",\"status\":\"completed\"},{\"step\":\"fix bug\",\"status\":\"in_progress\"}]}"));
+        assert_eq!(s.plan.len(), 2);
+        assert_eq!(s.plan[0], ("read code".to_string(), "completed".to_string()));
+        assert_eq!(s.plan[1].1, "in_progress");
     }
 
     #[test]
