@@ -36,6 +36,25 @@ def test_diff_and_context_commands():
     assert r.kind == "print" and "tokens" in r.payload
 
 
+def test_recap_is_prompt():
+    r = dispatch("/recap", _ctx())
+    assert r.kind == "prompt" and "recap" in r.payload.lower()
+
+
+def test_review_is_prompt_and_takes_focus():
+    r = dispatch("/review", _ctx())
+    assert r.kind == "prompt" and "review" in r.payload.lower()
+    r2 = dispatch("/review performance", _ctx())
+    assert "performance" in r2.payload
+
+
+def test_memory_and_export_actions():
+    assert dispatch("/memory", _ctx()).payload == "memory:"
+    assert dispatch("/memory add foo bar", _ctx()).payload == "memory:add foo bar"
+    assert dispatch("/export", _ctx()).payload == "export:"
+    assert dispatch("/export out.md", _ctx()).payload == "export:out.md"
+
+
 def test_tools_lists_registered():
     r = dispatch("/tools", _ctx())
     assert r.kind == "print"
@@ -86,9 +105,16 @@ def test_load_custom_commands(tmp_path):
 
 
 def test_builtin_beats_custom():
-    # 自定义 help 不应覆盖内置 help
+    # 受保护的核心命令（help）不可被自定义覆盖，保证可发现性
     r = dispatch("/help", _ctx(), custom={"help": "custom help"})
     assert "/compact" in r.payload
+
+
+def test_custom_overrides_non_protected_builtin():
+    # 非受保护的内置命令（review）允许被同名自定义命令覆盖
+    r = dispatch("/review the auth module", _ctx(),
+                 custom={"review": "MY REVIEW:\n$ARGUMENTS"})
+    assert r.payload == "MY REVIEW:\nthe auth module"
 
 
 # ── /init ─────────────────────────────────────────────────────────────────

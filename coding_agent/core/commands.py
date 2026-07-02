@@ -59,8 +59,12 @@ def _cmd_help(args: str, ctx: CommandContext) -> CommandResult:
         "  /init        — generate AGENTS.md from a repo scan",
         "  /clear, /new — start a fresh session",
         "  /sessions, /resume — pick a past session to resume",
+        "  /recap       — summarize this session so far",
+        "  /review      — review the current uncommitted changes",
         "  /diff        — show this session's file changes",
         "  /context     — context window usage breakdown",
+        "  /memory      — show project memory (/memory add <text> to save)",
+        "  /export      — export this session to a markdown file",
         "  /quit        — exit",
         "Custom commands live in .coding-agent/commands/<name>.md",
     ]
@@ -126,6 +130,37 @@ def _cmd_context(args: str, ctx: CommandContext) -> CommandResult:
         f"{', ' + str(ctx.total_reasoning_tokens) + ' reasoning' if ctx.total_reasoning_tokens else ''}). "
         f"Cache hit {ctx.cache_hit_rate*100:.0f}%.",
     )
+
+
+def _cmd_recap(args: str, ctx: CommandContext) -> CommandResult:
+    # 让模型回顾当前会话（作为一次 turn 运行，模型看得到完整历史）。
+    return CommandResult(
+        "prompt",
+        "Recap this session so far: the goal, what we did, key decisions and "
+        "file changes, and what's left. Be concise — a short bulleted summary.",
+    )
+
+
+def _cmd_review(args: str, ctx: CommandContext) -> CommandResult:
+    # 审查工作区改动（模型会用 git_diff / file_read 等工具）。
+    focus = f" Focus on: {args.strip()}." if args.strip() else ""
+    return CommandResult(
+        "prompt",
+        "Review my current uncommitted changes (use git_diff to see them). "
+        "Flag bugs, edge cases, and style issues; suggest concrete fixes."
+        + focus,
+    )
+
+
+def _cmd_memory(args: str, ctx: CommandContext) -> CommandResult:
+    # /memory        → 显示项目记忆
+    # /memory add X  → 存一条知识
+    return CommandResult("action", f"memory:{args.strip()}")
+
+
+def _cmd_export(args: str, ctx: CommandContext) -> CommandResult:
+    # 把当前会话转写导出到 markdown 文件（可带路径）。
+    return CommandResult("action", f"export:{args.strip()}")
 
 
 def _cmd_quit(args: str, ctx: CommandContext) -> CommandResult:
@@ -265,9 +300,18 @@ BUILTINS: dict[str, BuiltinHandler] = {
     "resume": _cmd_resume,
     "diff": _cmd_diff,
     "context": _cmd_context,
+    "recap": _cmd_recap,
+    "review": _cmd_review,
+    "memory": _cmd_memory,
+    "export": _cmd_export,
     "init": _cmd_init,
     "quit": _cmd_quit,
     "exit": _cmd_quit,
+}
+
+# 这些内置命令始终生效，不被同名自定义命令覆盖（保证可发现性/安全的会话控制）。
+_PROTECTED_BUILTINS = {
+    "help", "quit", "exit", "clear", "new", "config", "setup", "status",
 }
 
 
@@ -308,14 +352,17 @@ def dispatch(text: str, ctx: CommandContext,
     """
     解析并执行一条 slash 命令。
 
-    优先级：内置命令 > 自定义命令。未知命令返回提示。
+    优先级：自定义命令 > 内置命令，但**受保护的核心命令**（help/quit/config…）
+    不可被同名自定义命令覆盖——否则用户一个 custom `help` 就会破坏可发现性。
+    像 /review 这种内容型命令则允许用户用自己的版本覆盖。
     """
     body = text[1:].strip()
     parts = body.split(None, 1)
     name = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
-    if name in BUILTINS:
+    # 受保护的核心命令：始终用内置，不被自定义覆盖。
+    if name in _PROTECTED_BUILTINS:
         return BUILTINS[name](args, ctx)
 
     custom = custom if custom is not None else load_custom_commands()
@@ -327,5 +374,8 @@ def dispatch(text: str, ctx: CommandContext,
         else:
             prompt = template + (f"\n\n{args}" if args else "")
         return CommandResult("prompt", prompt)
+
+    if name in BUILTINS:
+        return BUILTINS[name](args, ctx)
 
     return CommandResult("print", f"Unknown command: /{name}. Try /help.")

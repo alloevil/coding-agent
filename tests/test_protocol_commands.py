@@ -182,3 +182,34 @@ def test_slash_resume_lists_sessions(monkeypatch):
         ev = next(d for t, d in proto._events if t == "sessions_list")
         assert ev["sessions"] == [{"id": "s1"}]
     asyncio.run(main())
+
+
+def test_memory_add_and_show(monkeypatch, tmp_path):
+    async def main():
+        monkeypatch.chdir(tmp_path)  # ProjectMemoryManager(".") writes here
+        proto = _make_protocol(monkeypatch)
+        # add
+        await proto.handle_request({"type": "user_input", "content": "/memory add build uses bazel"})
+        assert any("Saved" in d.get("text", "") for t, d in proto._events if t == "command_result")
+        # show reflects it
+        proto._events.clear()
+        await proto.handle_request({"type": "user_input", "content": "/memory"})
+        shown = next(d["text"] for t, d in proto._events if t == "command_result")
+        assert "bazel" in shown
+    asyncio.run(main())
+
+
+def test_export_writes_markdown(monkeypatch, tmp_path):
+    async def main():
+        from coding_agent.core.state import AgentState
+        monkeypatch.chdir(tmp_path)
+        proto = _make_protocol(monkeypatch)
+        st = AgentState(session_id="abc12345")
+        st.add_user_message("do the thing")
+        st.add_assistant_message("done")
+        proto.state = st
+        await proto.handle_request({"type": "user_input", "content": "/export out.md"})
+        assert any("Exported" in d.get("text", "") for t, d in proto._events if t == "command_result")
+        content = (tmp_path / "out.md").read_text()
+        assert "do the thing" in content and "done" in content
+    asyncio.run(main())

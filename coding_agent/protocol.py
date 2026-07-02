@@ -434,9 +434,53 @@ class AgentProtocol:
             except Exception as e:  # noqa: BLE001
                 out = f"diff failed: {e}"
             self._send_event("command_result", {"text": str(out)[:8000] or "No changes."})
+        elif action.startswith("memory:"):
+            # /memory 显示项目记忆；/memory add <text> 存一条知识。
+            from .memory.project import ProjectMemoryManager
+            spec = action.split(":", 1)[1].strip()
+            mgr = ProjectMemoryManager(".")
+            if spec.startswith("add ") and spec[4:].strip():
+                mgr.save_knowledge(spec[4:].strip(), source="/memory")
+                self._send_event("command_result", {"text": "🧠 Saved to project memory."})
+            else:
+                mem = mgr.get_context_for_agent()
+                self._send_event("command_result",
+                                 {"text": mem or "No project memory yet. "
+                                                 "Add with: /memory add <text>"})
+        elif action.startswith("export:"):
+            # /export [path]：把当前会话转写导出到 markdown 文件。
+            self._handle_export(action.split(":", 1)[1].strip())
         else:
             # 其它 action（status/plan-mode/agents...）：给一个可读回执。
             self._send_event("command_result", {"text": f"({action})"})
+
+    def _handle_export(self, path_arg: str) -> None:
+        """把当前会话转写导出为 markdown。默认写到 cwd 下带会话 id 的文件。"""
+        from .core.state import MessageRole
+        if self.state is None or not self.state.messages:
+            self._send_event("command_result", {"text": "Nothing to export yet."})
+            return
+        sid = self.state.session_id or "session"
+        path = path_arg or f"coding-agent-{sid[:8]}.md"
+        lines = [f"# coding-agent session {sid}", ""]
+        for m in self.state.messages:
+            role = m.role.value if hasattr(m.role, "value") else str(m.role)
+            if role == "user":
+                lines.append(f"## User\n\n{m.content}\n")
+            elif role == "assistant":
+                if m.content:
+                    lines.append(f"## Assistant\n\n{m.content}\n")
+                for tc in (m.tool_calls or []):
+                    lines.append(f"- 🔧 `{tc.name}` {tc.arguments}")
+            elif role == "tool" and m.tool_result:
+                body = (m.tool_result.content or "")[:1000]
+                lines.append(f"> {body}\n")
+        try:
+            from pathlib import Path
+            Path(path).write_text("\n".join(lines), encoding="utf-8")
+            self._send_event("command_result", {"text": f"📄 Exported session to {path}"})
+        except OSError as e:
+            self._send_event("command_result", {"text": f"export failed: {e}"})
 
     def _forward_event(self, event: AgentEventData) -> None:
         """转发 agent 事件到 stdout"""
